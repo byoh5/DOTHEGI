@@ -159,6 +159,10 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+function assetPath(filename: string): string {
+  return `${import.meta.env.BASE_URL}assets/${filename}`;
+}
+
 function createTrimmedSprite(image: HTMLImageElement): Sprite {
   const width = image.naturalWidth || image.width;
   const height = image.naturalHeight || image.height;
@@ -528,12 +532,12 @@ class WhackGame {
     this.showMessage("이미지를 불러오는 중...");
     try {
       const [bg, hole, pop, idle, hit, retreat] = await Promise.all([
-        loadImage("/assets/play_bg_clean.png"),
-        loadImage("/assets/hole_base.png"),
-        loadImage("/assets/mole_normal_pop.png"),
-        loadImage("/assets/mole_normal_idle.png"),
-        loadImage("/assets/mole_normal_hit.png"),
-        loadImage("/assets/mole_normal_retreat.png")
+        loadImage(assetPath("play_bg_clean.png")),
+        loadImage(assetPath("hole_base.png")),
+        loadImage(assetPath("mole_normal_pop.png")),
+        loadImage(assetPath("mole_normal_idle.png")),
+        loadImage(assetPath("mole_normal_hit.png")),
+        loadImage(assetPath("mole_normal_retreat.png"))
       ]);
 
       this.assets = {
