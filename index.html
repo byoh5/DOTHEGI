@@ -6,52 +6,62 @@
     <title>DOTHEGI - 두더지 잡기</title>
   </head>
   <body>
-    <div class="app-shell">
-      <header class="hud-grid">
-        <div class="hud-card">
-          <span class="hud-label">점수</span>
-          <strong id="scoreValue">0</strong>
-        </div>
-        <div class="hud-card">
-          <span class="hud-label">시간</span>
-          <strong id="timeValue">30</strong>
-        </div>
-        <div class="hud-card">
-          <span class="hud-label">레벨</span>
-          <strong id="levelValue">3x3</strong>
-        </div>
-        <div class="hud-card">
-          <span class="hud-label">콤보</span>
-          <strong id="comboValue">0</strong>
-        </div>
-        <div class="hud-card">
-          <span class="hud-label">최고점수</span>
-          <strong id="bestValue">0</strong>
-        </div>
-        <div class="hud-card">
-          <span class="hud-label">코인</span>
-          <strong id="coinsValue">0</strong>
-        </div>
-      </header>
-
-      <main class="stage-wrap">
+    <div class="game-shell">
+      <main class="stage-wrap" aria-label="게임 화면">
         <canvas id="gameCanvas" aria-label="두더지 게임 캔버스"></canvas>
+
+        <header class="hud-grid hud-overlay">
+          <div class="hud-card">
+            <span class="hud-label">점수</span>
+            <strong id="scoreValue">0</strong>
+          </div>
+          <div class="hud-card">
+            <span class="hud-label">시간</span>
+            <strong id="timeValue">30</strong>
+          </div>
+          <div class="hud-card">
+            <span class="hud-label">레벨</span>
+            <strong id="levelValue">3x3</strong>
+          </div>
+          <div class="hud-card">
+            <span class="hud-label">콤보</span>
+            <strong id="comboValue">0</strong>
+          </div>
+          <div class="hud-card">
+            <span class="hud-label">최고점수</span>
+            <strong id="bestValue">0</strong>
+          </div>
+          <div class="hud-card">
+            <span class="hud-label">코인</span>
+            <strong id="coinsValue">0</strong>
+          </div>
+        </header>
+
         <div class="center-message" id="centerMessage">이미지를 불러오는 중...</div>
+
+        <footer class="control-row control-overlay">
+          <button id="startBtn" class="btn btn-primary">재시작</button>
+          <button id="pauseBtn" class="btn btn-secondary" disabled>일시정지</button>
+          <p class="status-line" id="statusLine">준비</p>
+        </footer>
       </main>
+    </div>
 
-      <section class="character-row">
-        <button id="characterPickBtn" class="btn btn-primary" type="button">캐릭터 이미지 선택</button>
-        <button id="characterResetBtn" class="btn btn-secondary" type="button">기본 캐릭터</button>
-        <input id="characterInput" type="file" accept="image/*" multiple hidden />
-        <p class="status-line character-status" id="characterStatus">기본 캐릭터 사용 중</p>
-      </section>
-      <div class="character-preview-list" id="characterPreviewList"></div>
+    <div class="lobby-modal" id="lobbyModal" role="dialog" aria-modal="true" aria-label="게임 시작 설정">
+      <div class="lobby-card">
+        <h1 class="lobby-title">캐릭터 선택</h1>
+        <p class="lobby-sub">플레이 전에 이미지를 선택하면 두더지 대신 등장합니다.</p>
 
-      <footer class="control-row">
-        <button id="startBtn" class="btn btn-primary">시작</button>
-        <button id="pauseBtn" class="btn btn-secondary" disabled>일시정지</button>
-        <p class="status-line" id="statusLine">준비</p>
-      </footer>
+        <section class="character-row">
+          <button id="characterPickBtn" class="btn btn-primary" type="button">캐릭터 이미지 선택</button>
+          <button id="characterResetBtn" class="btn btn-secondary" type="button">기본 캐릭터</button>
+          <input id="characterInput" type="file" accept="image/*" multiple hidden />
+          <p class="status-line character-status" id="characterStatus">기본 캐릭터 사용 중</p>
+        </section>
+        <div class="character-preview-list" id="characterPreviewList"></div>
+
+        <button id="lobbyStartBtn" class="btn btn-primary lobby-start-btn" type="button">게임 시작</button>
+      </div>
     </div>
 
     <div class="result-modal hidden" id="resultModal" role="dialog" aria-modal="true" aria-label="게임 결과">

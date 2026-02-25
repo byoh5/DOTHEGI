@@ -240,6 +240,8 @@ class WhackGame {
   private readonly characterInput: HTMLInputElement;
   private readonly characterStatus: HTMLElement;
   private readonly characterPreviewList: HTMLElement;
+  private readonly lobbyModal: HTMLElement;
+  private readonly lobbyStartButton: HTMLButtonElement;
 
   private readonly resultModal: HTMLElement;
   private readonly resultSummary: HTMLElement;
@@ -305,6 +307,8 @@ class WhackGame {
     this.characterInput = this.mustGetInput("characterInput");
     this.characterStatus = this.mustGetElement("characterStatus");
     this.characterPreviewList = this.mustGetElement("characterPreviewList");
+    this.lobbyModal = this.mustGetElement("lobbyModal");
+    this.lobbyStartButton = this.mustGetButton("lobbyStartBtn");
 
     this.resultModal = this.mustGetElement("resultModal");
     this.resultSummary = this.mustGetElement("resultSummary");
@@ -325,7 +329,10 @@ class WhackGame {
     this.characterPickButton.addEventListener("click", this.handleCharacterPickClick);
     this.characterResetButton.addEventListener("click", this.handleCharacterResetClick);
     this.characterInput.addEventListener("change", this.handleCharacterInputChange);
+    this.lobbyStartButton.addEventListener("click", this.handleLobbyStartClick);
     window.addEventListener("beforeunload", this.releaseCustomCharacterUrls);
+
+    this.lobbyStartButton.disabled = true;
 
     void this.init();
   }
@@ -390,6 +397,13 @@ class WhackGame {
 
   private readonly handleCharacterPickClick = (): void => {
     this.characterInput.click();
+  };
+
+  private readonly handleLobbyStartClick = (): void => {
+    if (!this.assets) {
+      return;
+    }
+    this.startGame();
   };
 
   private readonly handleCharacterResetClick = (): void => {
@@ -550,12 +564,14 @@ class WhackGame {
       };
       this.resizeCanvas();
       this.statusText = "준비";
-      this.showMessage("시작 버튼을 눌러주세요");
+      this.showMessage("게임 시작 준비 완료");
+      this.lobbyStartButton.disabled = false;
       this.syncHud();
       this.renderFrame();
     } catch (error) {
       this.statusText = "에셋 로드 실패";
       this.showMessage("에셋 로드 실패\n파일 경로를 확인해주세요");
+      this.lobbyStartButton.disabled = true;
       this.syncHud();
       this.renderFrame();
       throw error;
@@ -563,6 +579,7 @@ class WhackGame {
   }
 
   private startGame(): void {
+    this.hideLobby();
     this.level = 1;
     this.score = 0;
     this.combo = 0;
@@ -1374,6 +1391,10 @@ class WhackGame {
 
   private hideMessage(): void {
     this.centerMessage.classList.add("hidden");
+  }
+
+  private hideLobby(): void {
+    this.lobbyModal.classList.add("hidden");
   }
 
   private setCustomCharacters(sprites: Sprite[], objectUrls: string[]): void {
