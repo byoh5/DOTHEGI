@@ -341,3 +341,60 @@ body {
     grid-column: 1 / -1;
   }
 }
+
+@media (orientation: landscape) and (max-height: 560px) {
+  .hud-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .hud-overlay {
+    left: 6px;
+    right: 6px;
+    top: 6px;
+  }
+
+  .hud-card {
+    padding: 3px 6px;
+    border-width: 2px;
+    border-radius: 9px;
+    box-shadow: 0 2px 0 rgba(54, 26, 8, 0.3);
+  }
+
+  .hud-label {
+    font-size: 10px;
+  }
+
+  .hud-card strong {
+    font-size: 14px;
+  }
+
+  .control-overlay {
+    left: 6px;
+    right: 6px;
+    bottom: 6px;
+  }
+
+  .control-row {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+  }
+
+  .btn {
+    font-size: 15px;
+    padding: 7px 8px;
+    border-width: 2px;
+  }
+
+  .status-line {
+    min-height: 20px;
+    font-size: 12px;
+    border-width: 2px;
+    grid-column: auto;
+  }
+
+  .center-message {
+    font-size: 14px;
+    padding: 9px 12px;
+  }
+}

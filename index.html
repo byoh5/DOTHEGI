@@ -10,7 +10,7 @@
       <main class="stage-wrap" aria-label="게임 화면">
         <canvas id="gameCanvas" aria-label="두더지 게임 캔버스"></canvas>
 
-        <header class="hud-grid hud-overlay">
+        <header class="hud-grid hud-overlay" id="hudOverlay">
           <div class="hud-card">
             <span class="hud-label">점수</span>
             <strong id="scoreValue">0</strong>
@@ -39,7 +39,7 @@
 
         <div class="center-message" id="centerMessage">이미지를 불러오는 중...</div>
 
-        <footer class="control-row control-overlay">
+        <footer class="control-row control-overlay" id="controlOverlay">
           <button id="startBtn" class="btn btn-primary">재시작</button>
           <button id="pauseBtn" class="btn btn-secondary" disabled>일시정지</button>
           <p class="status-line" id="statusLine">준비</p>

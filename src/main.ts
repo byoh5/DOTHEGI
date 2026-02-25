@@ -233,6 +233,8 @@ class WhackGame {
   private readonly coinsValue: HTMLElement;
   private readonly statusLine: HTMLElement;
   private readonly centerMessage: HTMLElement;
+  private readonly hudOverlay: HTMLElement;
+  private readonly controlOverlay: HTMLElement;
   private readonly startButton: HTMLButtonElement;
   private readonly pauseButton: HTMLButtonElement;
   private readonly characterPickButton: HTMLButtonElement;
@@ -300,6 +302,8 @@ class WhackGame {
     this.coinsValue = this.mustGetElement("coinsValue");
     this.statusLine = this.mustGetElement("statusLine");
     this.centerMessage = this.mustGetElement("centerMessage");
+    this.hudOverlay = this.mustGetElement("hudOverlay");
+    this.controlOverlay = this.mustGetElement("controlOverlay");
     this.startButton = this.mustGetButton("startBtn");
     this.pauseButton = this.mustGetButton("pauseBtn");
     this.characterPickButton = this.mustGetButton("characterPickBtn");
@@ -1013,18 +1017,23 @@ class WhackGame {
 
     const config = LEVEL_CONFIGS[this.level];
     const grid = config.grid;
-    const isPortrait = this.canvasHeight > this.canvasWidth;
-    const safeTopRatio = isPortrait ? 0.2 : 0.22;
-    const safeBottomRatio = isPortrait ? 0.15 : 0.13;
+    const overlayGap = this.canvasHeight * 0.02;
+    const hudHeight = this.hudOverlay.getBoundingClientRect().height;
+    const controlHeight = this.controlOverlay.getBoundingClientRect().height;
+    const safeTop = clamp(hudHeight + overlayGap, 0, this.canvasHeight * 0.7);
+    const safeBottomLimit = clamp(
+      this.canvasHeight - controlHeight - overlayGap,
+      safeTop + 80,
+      this.canvasHeight
+    );
+
     const boardHeightToWidthRatio = 0.82;
-    const maxBoardWidth = this.canvasWidth * 0.78;
-    const maxBoardHeight = this.canvasHeight * (isPortrait ? 0.52 : 0.62);
+    const maxBoardWidth = this.canvasWidth * 0.8;
+    const maxBoardHeight = Math.max(80, safeBottomLimit - safeTop);
     const preferredBoardHeight = maxBoardWidth * boardHeightToWidthRatio;
     const boardHeight = Math.min(maxBoardHeight, preferredBoardHeight);
     const boardWidth = Math.min(maxBoardWidth, boardHeight / boardHeightToWidthRatio);
 
-    const safeTop = this.canvasHeight * safeTopRatio;
-    const safeBottomLimit = this.canvasHeight * (1 - safeBottomRatio);
     const boardY = clamp((safeTop + safeBottomLimit - boardHeight) / 2, safeTop, safeBottomLimit - boardHeight);
 
     const boardRect: BoardRect = {
