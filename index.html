@@ -10,30 +10,38 @@
       <main class="stage-wrap" aria-label="게임 화면">
         <canvas id="gameCanvas" aria-label="두더지 게임 캔버스"></canvas>
 
-        <header class="hud-grid hud-overlay" id="hudOverlay">
-          <div class="hud-card">
-            <span class="hud-label">점수</span>
-            <strong id="scoreValue">0</strong>
+        <header class="hud-overlay" id="hudOverlay">
+          <div class="hud-grid">
+            <div class="hud-card">
+              <span class="hud-label">점수</span>
+              <strong id="scoreValue">0</strong>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">시간</span>
+              <strong id="timeValue">45</strong>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">스테이지</span>
+              <strong id="levelValue">1탄 3x3</strong>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">콤보</span>
+              <strong id="comboValue">0</strong>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">최고점수</span>
+              <strong id="bestValue">0</strong>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">코인</span>
+              <strong id="coinsValue">0</strong>
+            </div>
           </div>
-          <div class="hud-card">
-            <span class="hud-label">시간</span>
-            <strong id="timeValue">30</strong>
-          </div>
-          <div class="hud-card">
-            <span class="hud-label">레벨</span>
-            <strong id="levelValue">3x3</strong>
-          </div>
-          <div class="hud-card">
-            <span class="hud-label">콤보</span>
-            <strong id="comboValue">0</strong>
-          </div>
-          <div class="hud-card">
-            <span class="hud-label">최고점수</span>
-            <strong id="bestValue">0</strong>
-          </div>
-          <div class="hud-card">
-            <span class="hud-label">코인</span>
-            <strong id="coinsValue">0</strong>
+          <div class="time-gauge-row" id="timeGaugeOverlay" aria-label="남은 시간">
+            <div class="time-gauge-track">
+              <div class="time-gauge-fill" id="timeGaugeFill"></div>
+              <span class="time-gauge-text" id="timeGaugeText">45s</span>
+            </div>
           </div>
         </header>
 
@@ -42,6 +50,7 @@
         <footer class="control-row control-overlay" id="controlOverlay">
           <button id="startBtn" class="btn btn-primary">재시작</button>
           <button id="pauseBtn" class="btn btn-secondary" disabled>일시정지</button>
+          <button id="soundBtn" class="btn btn-tertiary" type="button">사운드 ON</button>
           <p class="status-line" id="statusLine">준비</p>
         </footer>
       </main>
@@ -59,6 +68,9 @@
           <p class="status-line character-status" id="characterStatus">기본 캐릭터 사용 중</p>
         </section>
         <div class="character-preview-list" id="characterPreviewList"></div>
+        <div class="lobby-option-row">
+          <button id="lobbySoundBtn" class="btn btn-tertiary" type="button">사운드 ON</button>
+        </div>
 
         <button id="lobbyStartBtn" class="btn btn-primary lobby-start-btn" type="button">게임 시작</button>
       </div>
@@ -70,6 +82,7 @@
         <p class="result-summary" id="resultSummary">점수 0</p>
         <p class="result-sub" id="resultSubSummary">코인 +0</p>
         <div class="result-buttons">
+          <button id="bragBtn" class="btn btn-tertiary">친구에게 자랑하기 (이미지 저장)</button>
           <button id="rewardBtn" class="btn btn-primary">보상 받기 (+20 코인)</button>
           <button id="replayBtn" class="btn btn-secondary">다시 플레이</button>
         </div>

@@ -78,6 +78,9 @@ body {
   left: 8px;
   right: 8px;
   top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   pointer-events: none;
 }
 
@@ -103,6 +106,59 @@ body {
   line-height: 1;
 }
 
+.time-gauge-row {
+  width: 100%;
+}
+
+.time-gauge-track {
+  position: relative;
+  height: 20px;
+  border-radius: 999px;
+  border: 2px solid rgba(41, 61, 32, 0.9);
+  background: rgba(17, 32, 18, 0.68);
+  overflow: hidden;
+}
+
+.time-gauge-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #65d95b 0%, #c8ea5c 100%);
+  transition: width 180ms linear, filter 150ms ease, background 150ms ease;
+}
+
+.time-gauge-fill.warn {
+  background: linear-gradient(90deg, #efc84b 0%, #f09033 100%);
+}
+
+.time-gauge-fill.critical {
+  background: linear-gradient(90deg, #f16f58 0%, #d8422f 100%);
+  animation: time-pulse 0.9s ease-in-out infinite;
+}
+
+.time-gauge-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: #fff9e8;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+@keyframes time-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.18);
+  }
+}
+
 .center-message {
   position: absolute;
   left: 50%;
@@ -126,7 +182,7 @@ body {
 
 .control-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 2fr;
+  grid-template-columns: 1fr 1fr 1fr 2fr;
   gap: 8px;
   align-items: center;
 }
@@ -166,6 +222,11 @@ body {
 .btn-secondary {
   background: linear-gradient(180deg, #ff9167, var(--button-alt));
   border-color: var(--button-alt-border);
+}
+
+.btn-tertiary {
+  background: linear-gradient(180deg, #72ce70, #3e8b45);
+  border-color: #285d2f;
 }
 
 .status-line {
@@ -243,6 +304,14 @@ body {
   padding: 6px 8px;
   overflow-x: auto;
   margin-top: 10px;
+}
+
+.lobby-option-row {
+  margin-top: 10px;
+}
+
+.lobby-option-row .btn {
+  width: 100%;
 }
 
 .character-preview-item {
@@ -338,8 +407,16 @@ body {
     font-size: 20px;
   }
 
+  .time-gauge-track {
+    height: 18px;
+  }
+
+  .time-gauge-text {
+    font-size: 11px;
+  }
+
   .control-row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .status-line {
@@ -365,6 +442,7 @@ body {
     left: 6px;
     right: 6px;
     top: 6px;
+    gap: 4px;
   }
 
   .hud-card {
@@ -382,6 +460,15 @@ body {
     font-size: 14px;
   }
 
+  .time-gauge-track {
+    height: 16px;
+    border-width: 1px;
+  }
+
+  .time-gauge-text {
+    font-size: 10px;
+  }
+
   .control-overlay {
     left: 6px;
     right: 6px;
@@ -389,7 +476,7 @@ body {
   }
 
   .control-row {
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr 1.6fr;
     gap: 6px;
   }
 

@@ -36,6 +36,7 @@ interface GameProfile {
   totalHits: number;
   totalMisses: number;
   coins: number;
+  soundEnabled: boolean;
 }
 
 interface BoardRect {
@@ -96,21 +97,67 @@ interface MoleDrawMetrics {
   clipBottomY: number;
 }
 
-const START_TIME_MS = 30_000;
+type PromotionState = "none" | "pending" | "grace";
+
+interface DifficultyProfile {
+  grid: number;
+  spawnIntervalMs: number;
+  holdMinMs: number;
+  holdMaxMs: number;
+  concurrentMin: number;
+  concurrentMax: number;
+}
+
+const START_TIME_MS = 45_000;
 const MAX_TIME_MS = 120_000;
 const CHECKPOINT_MS = 5_000;
 const CELL_COOLDOWN_MS = 900;
+const PROMOTION_PENDING_MS = 6_000;
+const STAGE1_PROMOTION_PENDING_MS = 4_000;
+const PROMOTION_GRACE_BASE_MS = 3_000;
+const LEVEL_ENTRY_EASE_MS: Partial<Record<number, number>> = {
+  2: 14_000,
+  3: 10_000,
+  4: 8_000,
+  5: 7_000,
+  6: 6_000,
+  7: 5_000
+};
+const PROMOTION_GRACE_MS_BY_LEVEL: Partial<Record<number, number>> = {
+  2: 8_000,
+  3: 5_000
+};
+const STAGE_CLEAR_BONUS_MS: Partial<Record<number, number>> = {
+  2: 18_000,
+  3: 12_000,
+  4: 10_000,
+  5: 9_000,
+  6: 8_000,
+  7: 7_000
+};
+const STAGE_ENTRY_MIN_TIME_MS: Partial<Record<number, number>> = {
+  2: 30_000,
+  3: 24_000,
+  4: 22_000,
+  5: 20_000,
+  6: 18_000,
+  7: 16_000
+};
 const STORAGE_KEY = "dothegi.profile.v2";
 const REWARD_BONUS_COINS = 20;
 const MOLE_ANCHOR_Y_FACTOR = -0.08;
 const HOLE_FRONT_COVER_START = 0.32;
 const MOLE_BOTTOM_CLIP_Y_FACTOR = 0.08;
 const MOLE_SIZE_FACTOR = 0.64;
+const MOLE_CLIP_RECT_WIDTH_FACTOR = 0.72;
+const MOLE_CLIP_CURVE_HALF_WIDTH_FACTOR = 0.56;
+const MOLE_CLIP_CURVE_EDGE_OFFSET_FACTOR = 0.14;
+const MOLE_CLIP_CURVE_DIP_OFFSET_FACTOR = 0.18;
 const MAX_CUSTOM_CHARACTER_COUNT = 6;
 const MAX_CUSTOM_IMAGE_BYTES = 6 * 1024 * 1024;
 
 const LEVEL_CONFIGS: Record<number, LevelConfig> = {
-  1: { grid: 3, concurrentMin: 1, concurrentMax: 1, spawnIntervalMs: 900, holdMinMs: 1000, holdMaxMs: 1200 },
+  1: { grid: 3, concurrentMin: 1, concurrentMax: 1, spawnIntervalMs: 980, holdMinMs: 1200, holdMaxMs: 1450 },
   2: { grid: 4, concurrentMin: 1, concurrentMax: 2, spawnIntervalMs: 820, holdMinMs: 930, holdMaxMs: 1080 },
   3: { grid: 5, concurrentMin: 1, concurrentMax: 2, spawnIntervalMs: 760, holdMinMs: 860, holdMaxMs: 980 },
   4: { grid: 6, concurrentMin: 2, concurrentMax: 2, spawnIntervalMs: 700, holdMinMs: 780, holdMaxMs: 900 },
@@ -135,11 +182,22 @@ const defaultProfile: GameProfile = {
   totalPlays: 0,
   totalHits: 0,
   totalMisses: 0,
-  coins: 0
+  coins: 0,
+  soundEnabled: true
 };
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function lerp(from: number, to: number, t: number): number {
+  const ratio = clamp(t, 0, 1);
+  return from + (to - from) * ratio;
+}
+
+function smoothstep(t: number): number {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
 }
 
 function randomBetween(min: number, max: number): number {
@@ -222,6 +280,201 @@ function pickWeightedType(weights: Array<[MoleType, number]>): MoleType {
   return weights[weights.length - 1][0];
 }
 
+interface ToneSpec {
+  freq: number;
+  durationMs: number;
+  offsetMs?: number;
+  gain?: number;
+  type?: OscillatorType;
+  endFreq?: number;
+}
+
+type AudioContextCtor = new () => AudioContext;
+
+function getAudioContextCtor(): AudioContextCtor | null {
+  const maybeWindow = window as Window & { AudioContext?: AudioContextCtor; webkitAudioContext?: AudioContextCtor };
+  return maybeWindow.AudioContext ?? maybeWindow.webkitAudioContext ?? null;
+}
+
+class SfxEngine {
+  private audioContext: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private enabled: boolean;
+
+  constructor(enabled: boolean) {
+    this.enabled = enabled;
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  async unlock(): Promise<void> {
+    const ctx = this.ensureContext();
+    if (!ctx) {
+      return;
+    }
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        // 사용자 제스처 외 상황에서는 resume이 실패할 수 있다.
+      }
+    }
+  }
+
+  dispose(): void {
+    const ctx = this.audioContext;
+    this.audioContext = null;
+    this.masterGain = null;
+    if (!ctx) {
+      return;
+    }
+    void ctx.close().catch(() => {
+      // 이미 닫힌 컨텍스트면 무시
+    });
+  }
+
+  playStart(): void {
+    this.play([
+      { freq: 420, durationMs: 80, gain: 0.09, type: "triangle" },
+      { freq: 640, durationMs: 120, offsetMs: 80, gain: 0.1, type: "triangle" }
+    ]);
+  }
+
+  playPause(): void {
+    this.play([{ freq: 260, durationMs: 120, gain: 0.08, type: "square" }]);
+  }
+
+  playResume(): void {
+    this.play([{ freq: 360, durationMs: 90, gain: 0.08, type: "triangle" }]);
+  }
+
+  playToggle(enabled: boolean): void {
+    if (!enabled) {
+      return;
+    }
+    this.play([{ freq: 520, durationMs: 70, gain: 0.08, type: "triangle" }]);
+  }
+
+  playHitNormal(): void {
+    this.play([{ freq: 760, durationMs: 70, gain: 0.08, type: "square" }]);
+  }
+
+  playHitGold(): void {
+    this.play([
+      { freq: 860, durationMs: 70, gain: 0.08, type: "triangle" },
+      { freq: 1240, durationMs: 90, offsetMs: 70, gain: 0.09, type: "triangle" }
+    ]);
+  }
+
+  playHitBomb(): void {
+    this.play([
+      { freq: 220, endFreq: 110, durationMs: 220, gain: 0.1, type: "sawtooth" },
+      { freq: 160, endFreq: 90, durationMs: 260, offsetMs: 40, gain: 0.09, type: "square" }
+    ]);
+  }
+
+  playHitIce(): void {
+    this.play([
+      { freq: 680, durationMs: 80, gain: 0.08, type: "sine" },
+      { freq: 500, durationMs: 130, offsetMs: 65, gain: 0.07, type: "sine" }
+    ]);
+  }
+
+  playMiss(): void {
+    this.play([{ freq: 220, durationMs: 80, gain: 0.07, type: "triangle" }]);
+  }
+
+  playLevelUp(): void {
+    this.play([
+      { freq: 520, durationMs: 80, gain: 0.08, type: "triangle" },
+      { freq: 780, durationMs: 90, offsetMs: 80, gain: 0.09, type: "triangle" }
+    ]);
+  }
+
+  playLevelDown(): void {
+    this.play([
+      { freq: 520, durationMs: 80, gain: 0.08, type: "triangle" },
+      { freq: 340, durationMs: 90, offsetMs: 80, gain: 0.08, type: "triangle" }
+    ]);
+  }
+
+  playReward(): void {
+    this.play([
+      { freq: 640, durationMs: 80, gain: 0.08, type: "triangle" },
+      { freq: 880, durationMs: 90, offsetMs: 70, gain: 0.09, type: "triangle" },
+      { freq: 1180, durationMs: 130, offsetMs: 140, gain: 0.1, type: "triangle" }
+    ]);
+  }
+
+  playGameOver(): void {
+    this.play([
+      { freq: 320, durationMs: 140, gain: 0.08, type: "sawtooth" },
+      { freq: 220, durationMs: 170, offsetMs: 110, gain: 0.08, type: "sawtooth" }
+    ]);
+  }
+
+  private ensureContext(): AudioContext | null {
+    if (this.audioContext) {
+      return this.audioContext;
+    }
+    const AudioCtor = getAudioContextCtor();
+    if (!AudioCtor) {
+      return null;
+    }
+    const ctx = new AudioCtor();
+    const master = ctx.createGain();
+    master.gain.value = 0.35;
+    master.connect(ctx.destination);
+    this.audioContext = ctx;
+    this.masterGain = master;
+    return this.audioContext;
+  }
+
+  private play(sequence: ToneSpec[]): void {
+    if (!this.enabled) {
+      return;
+    }
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain) {
+      return;
+    }
+    if (ctx.state !== "running") {
+      if (ctx.state === "suspended") {
+        void ctx.resume().then(() => this.play(sequence)).catch(() => {
+          // 자동 재생 정책으로 재개 실패 가능
+        });
+      }
+      return;
+    }
+    const startBase = ctx.currentTime;
+    for (const tone of sequence) {
+      const toneStart = startBase + (tone.offsetMs ?? 0) / 1000;
+      const toneEnd = toneStart + tone.durationMs / 1000;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const peak = tone.gain ?? 0.09;
+      const startFreq = Math.max(40, tone.freq);
+      const endFreq = Math.max(40, tone.endFreq ?? startFreq);
+      osc.type = tone.type ?? "triangle";
+      osc.frequency.setValueAtTime(startFreq, toneStart);
+      if (endFreq !== startFreq) {
+        osc.frequency.exponentialRampToValueAtTime(endFreq, toneEnd);
+      }
+
+      gain.gain.setValueAtTime(0.0001, toneStart);
+      gain.gain.exponentialRampToValueAtTime(peak, toneStart + Math.min(0.018, tone.durationMs / 1000));
+      gain.gain.exponentialRampToValueAtTime(0.0001, toneEnd);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(toneStart);
+      osc.stop(toneEnd + 0.025);
+    }
+  }
+}
+
 class WhackGame {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -231,30 +484,38 @@ class WhackGame {
   private readonly comboValue: HTMLElement;
   private readonly bestValue: HTMLElement;
   private readonly coinsValue: HTMLElement;
+  private readonly timeGaugeOverlay: HTMLElement;
+  private readonly timeGaugeFill: HTMLElement;
+  private readonly timeGaugeText: HTMLElement;
   private readonly statusLine: HTMLElement;
   private readonly centerMessage: HTMLElement;
   private readonly hudOverlay: HTMLElement;
   private readonly controlOverlay: HTMLElement;
   private readonly startButton: HTMLButtonElement;
   private readonly pauseButton: HTMLButtonElement;
+  private readonly soundButton: HTMLButtonElement;
   private readonly characterPickButton: HTMLButtonElement;
   private readonly characterResetButton: HTMLButtonElement;
   private readonly characterInput: HTMLInputElement;
   private readonly characterStatus: HTMLElement;
   private readonly characterPreviewList: HTMLElement;
+  private readonly lobbySoundButton: HTMLButtonElement;
   private readonly lobbyModal: HTMLElement;
   private readonly lobbyStartButton: HTMLButtonElement;
 
   private readonly resultModal: HTMLElement;
   private readonly resultSummary: HTMLElement;
   private readonly resultSubSummary: HTMLElement;
+  private readonly bragButton: HTMLButtonElement;
   private readonly rewardButton: HTMLButtonElement;
   private readonly replayButton: HTMLButtonElement;
+  private readonly sfx: SfxEngine;
 
   private assets: Assets | null = null;
   private profile: GameProfile = { ...defaultProfile };
   private customCharacterSprites: Sprite[] = [];
   private customCharacterObjectUrls: string[] = [];
+  private bragBackgroundImage: HTMLImageElement | null = null;
 
   private canvasWidth = 0;
   private canvasHeight = 0;
@@ -277,6 +538,16 @@ class WhackGame {
   private combo = 0;
   private bestCombo = 0;
   private timeRemainingMs = START_TIME_MS;
+  private timeGaugeCapMs = START_TIME_MS;
+  private tierProgress = 0;
+  private skillEMA = 0.5;
+  private promotionState: PromotionState = "none";
+  private promotionTargetLevel: number | null = null;
+  private promotionElapsedMs = 0;
+  private levelEaseFromLevel: number | null = null;
+  private levelEaseElapsedMs = 0;
+  private levelEaseDurationMs = 0;
+  private stageFloorLevel = 1;
   private lowPiStreak = 0;
 
   private statusText = "준비";
@@ -300,28 +571,36 @@ class WhackGame {
     this.comboValue = this.mustGetElement("comboValue");
     this.bestValue = this.mustGetElement("bestValue");
     this.coinsValue = this.mustGetElement("coinsValue");
+    this.timeGaugeOverlay = this.mustGetElement("timeGaugeOverlay");
+    this.timeGaugeFill = this.mustGetElement("timeGaugeFill");
+    this.timeGaugeText = this.mustGetElement("timeGaugeText");
     this.statusLine = this.mustGetElement("statusLine");
     this.centerMessage = this.mustGetElement("centerMessage");
     this.hudOverlay = this.mustGetElement("hudOverlay");
     this.controlOverlay = this.mustGetElement("controlOverlay");
     this.startButton = this.mustGetButton("startBtn");
     this.pauseButton = this.mustGetButton("pauseBtn");
+    this.soundButton = this.mustGetButton("soundBtn");
     this.characterPickButton = this.mustGetButton("characterPickBtn");
     this.characterResetButton = this.mustGetButton("characterResetBtn");
     this.characterInput = this.mustGetInput("characterInput");
     this.characterStatus = this.mustGetElement("characterStatus");
     this.characterPreviewList = this.mustGetElement("characterPreviewList");
+    this.lobbySoundButton = this.mustGetButton("lobbySoundBtn");
     this.lobbyModal = this.mustGetElement("lobbyModal");
     this.lobbyStartButton = this.mustGetButton("lobbyStartBtn");
 
     this.resultModal = this.mustGetElement("resultModal");
     this.resultSummary = this.mustGetElement("resultSummary");
     this.resultSubSummary = this.mustGetElement("resultSubSummary");
+    this.bragButton = this.mustGetButton("bragBtn");
     this.rewardButton = this.mustGetButton("rewardBtn");
     this.replayButton = this.mustGetButton("replayBtn");
 
     this.profile = this.loadProfile();
+    this.sfx = new SfxEngine(this.profile.soundEnabled);
     this.renderCharacterPreviews();
+    this.updateSoundButtons();
     this.syncHud();
     this.syncViewportHeight();
 
@@ -332,13 +611,16 @@ class WhackGame {
     this.canvas.addEventListener("pointerdown", this.handlePointerDown);
     this.startButton.addEventListener("click", this.handleStartClick);
     this.pauseButton.addEventListener("click", this.handlePauseClick);
+    this.soundButton.addEventListener("click", this.handleSoundToggleClick);
+    this.lobbySoundButton.addEventListener("click", this.handleSoundToggleClick);
+    this.bragButton.addEventListener("click", this.handleBragClick);
     this.rewardButton.addEventListener("click", this.handleRewardClick);
     this.replayButton.addEventListener("click", this.handleReplayClick);
     this.characterPickButton.addEventListener("click", this.handleCharacterPickClick);
     this.characterResetButton.addEventListener("click", this.handleCharacterResetClick);
     this.characterInput.addEventListener("change", this.handleCharacterInputChange);
     this.lobbyStartButton.addEventListener("click", this.handleLobbyStartClick);
-    window.addEventListener("beforeunload", this.releaseCustomCharacterUrls);
+    window.addEventListener("beforeunload", this.handleBeforeUnload);
 
     this.lobbyStartButton.disabled = true;
 
@@ -402,6 +684,7 @@ class WhackGame {
     if (!this.assets) {
       return;
     }
+    void this.sfx.unlock();
     this.startGame();
   };
 
@@ -409,6 +692,7 @@ class WhackGame {
     if (!this.assets) {
       return;
     }
+    void this.sfx.unlock();
     this.startGame();
   };
 
@@ -420,7 +704,22 @@ class WhackGame {
     if (!this.assets) {
       return;
     }
+    void this.sfx.unlock();
     this.startGame();
+  };
+
+  private readonly handleSoundToggleClick = (): void => {
+    const nextEnabled = !this.profile.soundEnabled;
+    this.profile.soundEnabled = nextEnabled;
+    this.sfx.setEnabled(nextEnabled);
+    this.updateSoundButtons();
+    this.saveProfile();
+    if (nextEnabled) {
+      void this.sfx.unlock();
+    }
+    this.sfx.playToggle(nextEnabled);
+    this.statusText = nextEnabled ? "사운드 ON" : "사운드 OFF";
+    this.syncHud();
   };
 
   private readonly handleCharacterResetClick = (): void => {
@@ -482,10 +781,55 @@ class WhackGame {
     this.customCharacterObjectUrls = [];
   };
 
+  private readonly handleBeforeUnload = (): void => {
+    this.releaseCustomCharacterUrls();
+    this.sfx.dispose();
+  };
+
+  private readonly handleBragClick = async (): Promise<void> => {
+    this.bragButton.disabled = true;
+    this.bragButton.textContent = "이미지 준비 중...";
+    try {
+      void this.sfx.unlock();
+      const blob = await this.buildBragImageBlob();
+      const filename = this.createBragFilename();
+      const shareFile = new File([blob], filename, { type: "image/png" });
+      const canNativeShare =
+        "share" in navigator &&
+        "canShare" in navigator &&
+        typeof navigator.canShare === "function" &&
+        navigator.canShare({ files: [shareFile] });
+
+      if (canNativeShare && typeof navigator.share === "function") {
+        await navigator.share({
+          files: [shareFile],
+          title: "DOTHEGI 점수 자랑",
+          text: `점수 ${this.matchSummary.score}점, 최고콤보 ${this.matchSummary.bestCombo}`
+        });
+        this.statusText = "공유 완료";
+      } else {
+        this.downloadBlob(blob, filename);
+        this.statusText = "이미지 저장 완료";
+      }
+      this.sfx.playReward();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        this.statusText = "공유 취소";
+      } else {
+        this.statusText = "이미지 저장 실패";
+      }
+    } finally {
+      this.bragButton.disabled = false;
+      this.bragButton.textContent = "친구에게 자랑하기 (이미지 저장)";
+      this.syncHud();
+    }
+  };
+
   private readonly handleRewardClick = (): void => {
     if (this.rewardClaimed) {
       return;
     }
+    void this.sfx.unlock();
     this.rewardClaimed = true;
     this.matchSummary.rewardCoins = REWARD_BONUS_COINS;
     this.profile.coins += REWARD_BONUS_COINS;
@@ -493,6 +837,7 @@ class WhackGame {
     this.rewardButton.disabled = true;
     this.rewardButton.textContent = "보상 수령 완료";
     this.statusText = "보상 +20 코인";
+    this.sfx.playReward();
     this.renderResultSummary();
     this.syncHud();
   };
@@ -501,22 +846,26 @@ class WhackGame {
     if (!this.isRunning) {
       return;
     }
+    void this.sfx.unlock();
     this.isPaused = !this.isPaused;
     if (this.isPaused) {
       this.pauseButton.textContent = "계속";
       this.statusText = "일시정지";
       this.showMessage("일시정지");
+      this.sfx.playPause();
     } else {
       this.pauseButton.textContent = "일시정지";
       this.statusText = "플레이 중";
       this.hideMessage();
       this.lastFrameMs = performance.now();
+      this.sfx.playResume();
     }
     this.syncHud();
     this.renderFrame();
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    void this.sfx.unlock();
     if (!this.isRunning || this.isPaused) {
       return;
     }
@@ -533,7 +882,7 @@ class WhackGame {
     if (target) {
       this.registerHit(target);
     } else {
-      this.registerMiss();
+      this.registerMiss(false);
     }
     this.syncHud();
   };
@@ -602,6 +951,16 @@ class WhackGame {
     this.combo = 0;
     this.bestCombo = 0;
     this.timeRemainingMs = START_TIME_MS;
+    this.timeGaugeCapMs = START_TIME_MS;
+    this.tierProgress = 0;
+    this.skillEMA = 0.5;
+    this.promotionState = "none";
+    this.promotionTargetLevel = null;
+    this.promotionElapsedMs = 0;
+    this.levelEaseFromLevel = null;
+    this.levelEaseElapsedMs = 0;
+    this.levelEaseDurationMs = 0;
+    this.stageFloorLevel = 1;
     this.lowPiStreak = 0;
     this.elapsedMs = 0;
     this.nextCheckpointAtMs = CHECKPOINT_MS;
@@ -627,6 +986,7 @@ class WhackGame {
     this.startButton.textContent = "재시작";
     this.hideMessage();
     this.hideResultModal();
+    this.sfx.playStart();
 
     this.refreshCells();
     this.lastFrameMs = 0;
@@ -640,6 +1000,8 @@ class WhackGame {
   private update(deltaMs: number): void {
     this.elapsedMs += deltaMs;
     this.timeRemainingMs = Math.max(0, this.timeRemainingMs - deltaMs);
+    this.updatePromotionState(deltaMs);
+    this.updateLevelEntryEase(deltaMs);
 
     this.updateMoles(deltaMs);
     this.spawnMolesIfNeeded();
@@ -663,7 +1025,7 @@ class WhackGame {
 
       if (mole.phase === "idle" && mole.phaseElapsedMs >= mole.idleDurationMs) {
         if (!mole.wasHit) {
-          this.registerMiss();
+          this.registerMiss(true);
         }
         mole.phase = "retreat";
         mole.phaseElapsedMs = 0;
@@ -687,15 +1049,15 @@ class WhackGame {
       return;
     }
 
-    const config = LEVEL_CONFIGS[this.level];
-    while (this.elapsedMs >= this.nextSpawnAtMs && this.activeMoles.length < config.concurrentMax) {
-      const didSpawn = this.spawnSingleMole(config);
+    const profile = this.getDifficultyProfile();
+    while (this.elapsedMs >= this.nextSpawnAtMs && this.activeMoles.length < profile.concurrentMax) {
+      const didSpawn = this.spawnSingleMole(profile);
       if (!didSpawn) {
         this.nextSpawnAtMs = this.elapsedMs + 120;
         break;
       }
       const slowFactor = this.getSlowFactor();
-      const nextInterval = randomBetween(config.spawnIntervalMs * 0.85, config.spawnIntervalMs * 1.15) * slowFactor;
+      const nextInterval = randomBetween(profile.spawnIntervalMs * 0.88, profile.spawnIntervalMs * 1.12) * slowFactor;
       this.nextSpawnAtMs += nextInterval;
     }
   }
@@ -704,11 +1066,14 @@ class WhackGame {
     return this.elapsedMs < this.slowUntilMs ? 1.35 : 1;
   }
 
-  private spawnSingleMole(config: LevelConfig): boolean {
+  private spawnSingleMole(profile: DifficultyProfile): boolean {
     const occupied = new Set<number>(this.activeMoles.map((mole) => mole.cellIndex));
     const desiredRecentAvoid = this.recentCellIndices.slice(-3);
+    const unlockedCellSet = this.getUnlockedSpawnCellSet();
+    const isUnlocked = (cell: Cell) => !unlockedCellSet || unlockedCellSet.has(cell.index);
 
     let candidates = this.cells
+      .filter((cell) => isUnlocked(cell))
       .filter((cell) => !occupied.has(cell.index))
       .filter((cell) => this.elapsedMs >= (this.cellCooldownUntil[cell.index] ?? 0))
       .filter((cell) => !desiredRecentAvoid.includes(cell.index))
@@ -716,18 +1081,28 @@ class WhackGame {
 
     if (!candidates.length) {
       candidates = this.cells
+        .filter((cell) => isUnlocked(cell))
         .filter((cell) => !occupied.has(cell.index))
         .filter((cell) => this.elapsedMs >= (this.cellCooldownUntil[cell.index] ?? 0))
         .map((cell) => cell.index);
     }
     if (!candidates.length) {
+      candidates = this.cells.filter((cell) => isUnlocked(cell)).filter((cell) => !occupied.has(cell.index)).map((cell) => cell.index);
+    }
+    if (!candidates.length && unlockedCellSet) {
+      candidates = this.cells
+        .filter((cell) => !occupied.has(cell.index))
+        .filter((cell) => this.elapsedMs >= (this.cellCooldownUntil[cell.index] ?? 0))
+        .map((cell) => cell.index);
+    }
+    if (!candidates.length && unlockedCellSet) {
       candidates = this.cells.filter((cell) => !occupied.has(cell.index)).map((cell) => cell.index);
     }
     if (!candidates.length) {
       return false;
     }
 
-    const concurrencyFloor = config.concurrentMin;
+    const concurrencyFloor = profile.concurrentMin;
     if (this.activeMoles.length < concurrencyFloor - 1) {
       this.nextSpawnAtMs = this.elapsedMs;
     }
@@ -754,7 +1129,7 @@ class WhackGame {
       phaseElapsedMs: 0,
       spawnedAtMs: this.elapsedMs,
       popDurationMs: randomBetween(120, 170),
-      idleDurationMs: randomBetween(config.holdMinMs, config.holdMaxMs) * idleScale,
+      idleDurationMs: randomBetween(profile.holdMinMs, profile.holdMaxMs) * idleScale,
       hitDurationMs: randomBetween(130, 180),
       retreatDurationMs: randomBetween(100, 150),
       wasHit: false,
@@ -771,30 +1146,176 @@ class WhackGame {
     return true;
   }
 
-  private pickMoleType(): MoleType {
-    if (this.level <= 3) {
-      return pickWeightedType([
-        ["normal", 88],
-        ["gold", 8],
-        ["bomb", 4],
-        ["ice", 0]
-      ]);
+  private getUnlockedSpawnCellSet(): Set<number> | null {
+    if (
+      this.levelEaseFromLevel === null ||
+      this.levelEaseDurationMs <= 0 ||
+      !this.cells.length ||
+      this.level <= this.levelEaseFromLevel
+    ) {
+      return null;
     }
 
-    if (this.elapsedMs < 20_000) {
-      return pickWeightedType([
-        ["normal", 76],
-        ["gold", 14],
-        ["bomb", 10],
-        ["ice", 0]
-      ]);
+    const fromGrid = LEVEL_CONFIGS[this.levelEaseFromLevel].grid;
+    const currentGrid = LEVEL_CONFIGS[this.level].grid;
+    if (currentGrid <= fromGrid) {
+      return null;
     }
+
+    const easeRatio = this.getLevelEntryEaseRatio();
+    if (easeRatio >= 0.999) {
+      return null;
+    }
+
+    const totalCells = this.cells.length;
+    const startCells = clamp(fromGrid * fromGrid, 1, totalCells);
+    const unlockedCells = clamp(Math.round(lerp(startCells, totalCells, smoothstep(easeRatio))), 1, totalCells);
+
+    const center = (currentGrid - 1) / 2;
+    const distance = (cell: Cell) => Math.abs(cell.row - center) + Math.abs(cell.col - center);
+
+    const ranked = [...this.cells].sort((a, b) => {
+      const distDiff = distance(a) - distance(b);
+      if (distDiff !== 0) {
+        return distDiff;
+      }
+      const hash = (cell: Cell) => ((cell.row * 73856093) ^ (cell.col * 19349663)) >>> 0;
+      return hash(a) - hash(b);
+    });
+
+    return new Set(ranked.slice(0, unlockedCells).map((cell) => cell.index));
+  }
+
+  private getDifficultyProfile(): DifficultyProfile {
+    const current = LEVEL_CONFIGS[this.level];
+    const nextLevel = Math.min(7, this.level + 1);
+    const next = LEVEL_CONFIGS[nextLevel];
+    const blendToNext = this.level === 7 ? 0 : this.getTierBlendToNext();
+
+    let spawnIntervalMs = lerp(current.spawnIntervalMs, next.spawnIntervalMs, blendToNext);
+    let holdMinMs = lerp(current.holdMinMs, next.holdMinMs, blendToNext);
+    let holdMaxMs = lerp(current.holdMaxMs, next.holdMaxMs, blendToNext);
+
+    let concurrentMax = Math.round(lerp(current.concurrentMax, next.concurrentMax, blendToNext));
+    let concurrentMin = Math.round(lerp(current.concurrentMin, next.concurrentMin, blendToNext * 0.7));
+
+    if (this.level === 1) {
+      // 1탄은 동시 등장 1개를 유지해 난도 점프를 줄인다.
+      concurrentMin = 1;
+      concurrentMax = 1;
+    }
+
+    const levelEntryEaseRatio = this.getLevelEntryEaseRatio();
+    if (this.levelEaseFromLevel !== null && levelEntryEaseRatio < 1) {
+      const entryFrom = LEVEL_CONFIGS[this.levelEaseFromLevel];
+      const ease = smoothstep(levelEntryEaseRatio);
+      spawnIntervalMs = lerp(entryFrom.spawnIntervalMs, spawnIntervalMs, ease);
+      holdMinMs = lerp(entryFrom.holdMinMs, holdMinMs, ease);
+      holdMaxMs = lerp(entryFrom.holdMaxMs, holdMaxMs, ease);
+      concurrentMin = Math.round(lerp(entryFrom.concurrentMin, concurrentMin, ease * 0.82));
+      concurrentMax = Math.round(lerp(entryFrom.concurrentMax, concurrentMax, ease * 0.82));
+    }
+
+    if (this.promotionState === "grace") {
+      spawnIntervalMs *= 1.08;
+      holdMinMs *= 1.12;
+      holdMaxMs *= 1.12;
+      concurrentMax = Math.max(1, concurrentMax - 1);
+    }
+
+    concurrentMin = clamp(concurrentMin, 1, 3);
+    concurrentMax = clamp(concurrentMax, concurrentMin, 3);
+
+    return {
+      grid: current.grid,
+      spawnIntervalMs,
+      holdMinMs,
+      holdMaxMs,
+      concurrentMin,
+      concurrentMax
+    };
+  }
+
+  private getTierBlendToNext(): number {
+    const progressBlend = clamp(this.tierProgress / 100, 0, 1);
+    let blend = progressBlend;
+
+    if (this.level === 1) {
+      // 1탄은 내부 난이도 상승 곡선을 더 완만하게 설정한다.
+      blend = progressBlend < 0.8 ? progressBlend * 0.45 : 0.36 + (progressBlend - 0.8) * 1.2;
+    }
+
+    if (this.promotionState === "pending") {
+      const pendingBlend = clamp(this.promotionElapsedMs / this.getPendingDurationMs(), 0, 1) * 0.85;
+      blend = Math.max(blend, pendingBlend);
+    }
+
+    if (this.promotionState === "grace") {
+      const graceDurationMs = this.getPromotionGraceDurationMs();
+      const graceRatio = 1 - clamp(this.promotionElapsedMs / graceDurationMs, 0, 1);
+      blend = Math.min(blend, 0.35 + graceRatio * 0.15);
+    }
+
+    return clamp(blend, 0, 1);
+  }
+
+  private pickMoleType(): MoleType {
+    const startWeights: Record<number, Record<MoleType, number>> = {
+      1: { normal: 94, gold: 5, bomb: 1, ice: 0 },
+      2: { normal: 82, gold: 11, bomb: 7, ice: 0 },
+      3: { normal: 78, gold: 12, bomb: 9, ice: 1 },
+      4: { normal: 74, gold: 13, bomb: 11, ice: 2 },
+      5: { normal: 71, gold: 14, bomb: 12, ice: 3 },
+      6: { normal: 68, gold: 14, bomb: 14, ice: 4 },
+      7: { normal: 66, gold: 14, bomb: 15, ice: 5 }
+    };
+    const endWeights: Record<number, Record<MoleType, number>> = {
+      1: { normal: 89, gold: 8, bomb: 3, ice: 0 },
+      2: { normal: 76, gold: 13, bomb: 10, ice: 1 },
+      3: { normal: 72, gold: 13, bomb: 12, ice: 3 },
+      4: { normal: 68, gold: 14, bomb: 14, ice: 4 },
+      5: { normal: 65, gold: 15, bomb: 15, ice: 5 },
+      6: { normal: 62, gold: 15, bomb: 17, ice: 6 },
+      7: { normal: 60, gold: 16, bomb: 18, ice: 6 }
+    };
+
+    const blend = this.getTierBlendToNext();
+    const start = startWeights[this.level] ?? startWeights[1];
+    const end = endWeights[this.level] ?? endWeights[1];
+    let normal = lerp(start.normal, end.normal, blend);
+    let gold = lerp(start.gold, end.gold, blend);
+    let bomb = lerp(start.bomb, end.bomb, blend);
+    let ice = lerp(start.ice, end.ice, blend);
+
+    const levelEntryEaseRatio = this.getLevelEntryEaseRatio();
+    if (this.levelEaseFromLevel !== null && levelEntryEaseRatio < 1) {
+      const safety = 1 - smoothstep(levelEntryEaseRatio);
+      normal += 8 * safety;
+      gold *= 1 - 0.16 * safety;
+      bomb *= 1 - 0.78 * safety;
+      ice *= 1 - 0.72 * safety;
+    }
+
+    if (this.promotionState === "grace") {
+      bomb *= 0.25;
+      ice *= 0.5;
+      normal += 6;
+    }
+    if (this.timeRemainingMs <= 9_000) {
+      bomb *= 1.05;
+      gold *= 1.12;
+    }
+
+    normal = Math.max(1, normal);
+    gold = Math.max(0.5, gold);
+    bomb = Math.max(0.2, bomb);
+    ice = Math.max(0, ice);
 
     return pickWeightedType([
-      ["normal", 70],
-      ["gold", 15],
-      ["bomb", 12],
-      ["ice", 3]
+      ["normal", normal],
+      ["gold", gold],
+      ["bomb", bomb],
+      ["ice", ice]
     ]);
   }
 
@@ -812,6 +1333,95 @@ class WhackGame {
     }
   }
 
+  private updatePromotionState(deltaMs: number): void {
+    if (this.promotionState === "none") {
+      return;
+    }
+    this.promotionElapsedMs += deltaMs;
+
+    if (this.promotionState === "pending" && this.promotionElapsedMs >= this.getPendingDurationMs()) {
+      const targetLevel = this.promotionTargetLevel ?? this.level + 1;
+      this.setLevel(targetLevel);
+      const grantedMs = this.applyStageClearTimeBonus(targetLevel);
+      const clearedStage = Math.max(1, targetLevel - 1);
+      this.promotionState = "grace";
+      this.promotionElapsedMs = 0;
+      this.statusText = `${clearedStage}탄 클리어! +${Math.round(grantedMs / 1000)}s · ${
+        LEVEL_CONFIGS[this.level].grid
+      }x${LEVEL_CONFIGS[this.level].grid} 적응`;
+      return;
+    }
+
+    if (this.promotionState === "grace" && this.promotionElapsedMs >= this.getPromotionGraceDurationMs()) {
+      this.promotionState = "none";
+      this.promotionTargetLevel = null;
+      this.promotionElapsedMs = 0;
+      this.statusText = "플레이 중";
+    }
+  }
+
+  private updateLevelEntryEase(deltaMs: number): void {
+    if (this.levelEaseFromLevel === null || this.levelEaseDurationMs <= 0) {
+      return;
+    }
+    this.levelEaseElapsedMs = Math.min(this.levelEaseElapsedMs + deltaMs, this.levelEaseDurationMs);
+    if (this.levelEaseElapsedMs >= this.levelEaseDurationMs) {
+      this.levelEaseFromLevel = null;
+      this.levelEaseElapsedMs = 0;
+      this.levelEaseDurationMs = 0;
+    }
+  }
+
+  private getLevelEntryEaseRatio(): number {
+    if (this.levelEaseFromLevel === null || this.levelEaseDurationMs <= 0) {
+      return 1;
+    }
+    return clamp(this.levelEaseElapsedMs / this.levelEaseDurationMs, 0, 1);
+  }
+
+  private startPromotion(nextLevel: number): void {
+    if (this.promotionState !== "none") {
+      return;
+    }
+    this.promotionState = "pending";
+    this.promotionTargetLevel = clamp(nextLevel, 1, 7);
+    this.tierProgress = Math.max(this.tierProgress, 88);
+    this.promotionElapsedMs = 0;
+    const grid = LEVEL_CONFIGS[this.promotionTargetLevel].grid;
+    const stage = Math.max(1, this.promotionTargetLevel - 1);
+    this.statusText = `${stage}탄 클리어 직전 · ${grid}x${grid} 준비`;
+    this.sfx.playLevelUp();
+  }
+
+  private getPendingDurationMs(): number {
+    return this.level === 1 ? STAGE1_PROMOTION_PENDING_MS : PROMOTION_PENDING_MS;
+  }
+
+  private getPromotionGraceDurationMs(): number {
+    return PROMOTION_GRACE_MS_BY_LEVEL[this.level] ?? PROMOTION_GRACE_BASE_MS;
+  }
+
+  private applyStageClearTimeBonus(targetLevel: number): number {
+    const bonusMs = STAGE_CLEAR_BONUS_MS[targetLevel] ?? 8_000;
+    const minEntryMs = STAGE_ENTRY_MIN_TIME_MS[targetLevel] ?? 14_000;
+    const before = this.timeRemainingMs;
+    const withBonus = Math.min(MAX_TIME_MS, before + bonusMs);
+    this.timeRemainingMs = clamp(Math.max(withBonus, minEntryMs), 0, MAX_TIME_MS);
+    this.timeGaugeCapMs = Math.max(this.timeGaugeCapMs, this.timeRemainingMs);
+    return Math.max(0, this.timeRemainingMs - before);
+  }
+
+  private cancelPromotion(reason: string): void {
+    if (this.promotionState !== "pending") {
+      return;
+    }
+    this.promotionState = "none";
+    this.promotionTargetLevel = null;
+    this.promotionElapsedMs = 0;
+    this.statusText = reason;
+    this.sfx.playLevelDown();
+  }
+
   private evaluateCheckpoint(): void {
     const hits = this.intervalStats.hits;
     const misses = this.intervalStats.misses;
@@ -825,10 +1435,25 @@ class WhackGame {
     const comboMetric = clamp(this.combo / 20, 0, 1);
     const pi = 0.45 * accuracy + 0.35 * speed + 0.2 * comboMetric;
 
+    this.skillEMA = lerp(this.skillEMA, pi, 0.25);
+    const targetPi = this.getTargetPiForLevel(this.level);
+    const passiveRamp = this.level === 1 ? (pi >= 0.34 ? 2.5 : 1.1) : 0.8;
+    const performanceScale = this.level === 1 ? 22 : 32;
+    const performanceDelta = (this.skillEMA - targetPi) * performanceScale;
+    const hitMomentum = clamp((hits - misses) * (this.level === 1 ? 1.4 : 1.1), -8, 10);
+    let progressDelta = clamp(passiveRamp + performanceDelta + hitMomentum, -14, 16);
+    if (attempts === 0) {
+      progressDelta = -2;
+    }
+    if (this.promotionState === "pending") {
+      progressDelta *= 0.45;
+    }
+    this.tierProgress = clamp(this.tierProgress + progressDelta, 0, 100);
+
     let bonusMs = 0;
-    if (pi >= 0.85) {
+    if (pi >= 0.88) {
       bonusMs += 5000;
-    } else if (pi >= 0.7) {
+    } else if (pi >= 0.75) {
       bonusMs += 3000;
     }
     if (hits > 0 && misses === 0) {
@@ -836,10 +1461,7 @@ class WhackGame {
     }
     if (bonusMs > 0) {
       this.timeRemainingMs = Math.min(MAX_TIME_MS, this.timeRemainingMs + bonusMs);
-    }
-
-    if (this.level < 7 && pi >= 0.72 && hits >= MIN_HITS_TO_LEVEL_UP[this.level]) {
-      this.setLevel(this.level + 1);
+      this.timeGaugeCapMs = Math.max(this.timeGaugeCapMs, this.timeRemainingMs);
     }
 
     if (pi < 0.4) {
@@ -848,14 +1470,67 @@ class WhackGame {
       this.lowPiStreak = 0;
     }
 
-    if (this.elapsedMs > 10_000 && this.lowPiStreak >= 2) {
-      this.setLevel(this.level - 1);
+    if (
+      this.promotionState === "pending" &&
+      this.level > 1 &&
+      this.skillEMA < targetPi - 0.08 &&
+      misses > hits
+    ) {
+      this.cancelPromotion("전환 보류 · 리듬 회복");
+    }
+
+    const requiredHits = this.level === 1 ? 1 : Math.max(2, MIN_HITS_TO_LEVEL_UP[this.level] - 1);
+    const requiredProgress = this.level === 1 ? 66 : 80;
+    const requiredSkill = this.level === 1 ? targetPi - 0.02 : targetPi + 0.05;
+    if (
+      this.promotionState === "none" &&
+      this.level < 7 &&
+      this.tierProgress >= requiredProgress &&
+      this.skillEMA >= requiredSkill &&
+      hits >= requiredHits
+    ) {
+      this.startPromotion(this.level + 1);
+    }
+
+    const demotionFloor = this.stageFloorLevel >= 2 ? 2 : 1;
+    if (
+      this.promotionState === "none" &&
+      this.level > demotionFloor &&
+      this.levelEaseFromLevel === null &&
+      this.elapsedMs > 25_000 &&
+      this.lowPiStreak >= 4 &&
+      this.skillEMA <= targetPi - 0.22 &&
+      this.tierProgress <= 16
+    ) {
+      this.setLevel(Math.max(demotionFloor, this.level - 1));
       this.lowPiStreak = 0;
+      this.tierProgress = 60;
+      this.statusText = `난이도 완화: ${LEVEL_CONFIGS[this.level].grid}x${LEVEL_CONFIGS[this.level].grid}`;
     }
 
     const bonusLabel = bonusMs > 0 ? ` · +${Math.round(bonusMs / 1000)}s` : "";
-    this.statusText = `PI ${pi.toFixed(2)}${bonusLabel}`;
+    const progressLabel = ` · 구간 ${Math.round(this.tierProgress)}%`;
+    const promotionLabel =
+      this.promotionState === "pending"
+        ? ` · 전환 ${Math.max(0, Math.ceil((this.getPendingDurationMs() - this.promotionElapsedMs) / 1000))}s`
+        : "";
+    if (this.promotionState === "none" || this.statusText.startsWith("PI")) {
+      this.statusText = `PI ${pi.toFixed(2)}${bonusLabel}${progressLabel}${promotionLabel}`;
+    }
     this.intervalStats = { hits: 0, misses: 0, reactionTotalMs: 0, reactionCount: 0 };
+  }
+
+  private getTargetPiForLevel(level: number): number {
+    const targets: Record<number, number> = {
+      1: 0.42,
+      2: 0.53,
+      3: 0.57,
+      4: 0.61,
+      5: 0.65,
+      6: 0.69,
+      7: 0.72
+    };
+    return targets[level] ?? 0.6;
   }
 
   private setLevel(nextLevel: number): void {
@@ -865,10 +1540,31 @@ class WhackGame {
     }
     const previous = this.level;
     this.level = clamped;
+    this.activeMoles = [];
+    this.recentCellIndices = [];
+    this.nextSpawnAtMs = this.elapsedMs + 180;
+    this.levelEaseFromLevel = null;
+    this.levelEaseElapsedMs = 0;
+    this.levelEaseDurationMs = 0;
+    if (this.level > previous) {
+      this.stageFloorLevel = Math.max(this.stageFloorLevel, this.level);
+      const easeDurationMs = LEVEL_ENTRY_EASE_MS[this.level] ?? 0;
+      if (easeDurationMs > 0) {
+        this.levelEaseFromLevel = previous;
+        this.levelEaseDurationMs = easeDurationMs;
+      }
+    }
     this.refreshCells();
     const grid = LEVEL_CONFIGS[this.level].grid;
     const direction = this.level > previous ? "상승" : "하락";
     this.statusText = `난이도 ${direction}: ${grid}x${grid}`;
+    if (this.level > previous) {
+      this.tierProgress = Math.min(this.tierProgress, 24);
+      this.sfx.playLevelUp();
+    } else {
+      this.tierProgress = Math.max(this.tierProgress, 58);
+      this.sfx.playLevelDown();
+    }
   }
 
   private findHitMole(x: number, y: number): ActiveMole | null {
@@ -963,12 +1659,18 @@ class WhackGame {
 
     if (mole.type === "normal") {
       this.statusText = `HIT +1 x${this.combo}`;
+      this.sfx.playHitNormal();
     }
     if (mole.type === "gold") {
       this.statusText = `GOLD +3 x${this.combo}`;
+      this.sfx.playHitGold();
     }
     if (mole.type === "bomb") {
       this.statusText = "BOMB -3 / -2s";
+      this.sfx.playHitBomb();
+    }
+    if (mole.type === "ice") {
+      this.sfx.playHitIce();
     }
 
     if (navigator.vibrate) {
@@ -976,11 +1678,14 @@ class WhackGame {
     }
   }
 
-  private registerMiss(): void {
+  private registerMiss(fromTimeout: boolean): void {
     this.combo = 0;
     this.intervalStats.misses += 1;
     this.sessionMisses += 1;
     this.statusText = "MISS";
+    if (!fromTimeout) {
+      this.sfx.playMiss();
+    }
   }
 
   private getComboMultiplier(combo: number): number {
@@ -1032,8 +1737,9 @@ class WhackGame {
     const grid = config.grid;
     const overlayGap = this.canvasHeight * 0.02;
     const hudHeight = this.hudOverlay.getBoundingClientRect().height;
+    const gaugeHeight = this.timeGaugeOverlay.getBoundingClientRect().height;
     const controlHeight = this.controlOverlay.getBoundingClientRect().height;
-    const safeTop = clamp(hudHeight + overlayGap, 0, this.canvasHeight * 0.7);
+    const safeTop = clamp(hudHeight + overlayGap + gaugeHeight * 0.12, 0, this.canvasHeight * 0.7);
     const safeBottomLimit = clamp(
       this.canvasHeight - controlHeight - overlayGap,
       safeTop + 80,
@@ -1133,6 +1839,7 @@ class WhackGame {
     this.profile.bestCombo = Math.max(this.profile.bestCombo, this.bestCombo);
     this.profile.coins += baseCoins;
     this.saveProfile();
+    this.sfx.playGameOver();
 
     this.statusText = `종료 · 점수 ${this.score}`;
     this.hideMessage();
@@ -1142,17 +1849,56 @@ class WhackGame {
     this.renderFrame();
   }
 
+  private updateSoundButtons(): void {
+    const isEnabled = this.profile.soundEnabled;
+    const nextText = isEnabled ? "사운드 ON" : "사운드 OFF";
+    this.soundButton.textContent = nextText;
+    this.soundButton.setAttribute("aria-pressed", String(isEnabled));
+    this.lobbySoundButton.textContent = nextText;
+    this.lobbySoundButton.setAttribute("aria-pressed", String(isEnabled));
+  }
+
   private syncHud(): void {
+    if (this.timeRemainingMs > this.timeGaugeCapMs) {
+      this.timeGaugeCapMs = Math.min(MAX_TIME_MS, this.timeRemainingMs);
+    }
+
+    const remainingSec = Math.max(0, Math.ceil(this.timeRemainingMs / 1000));
     this.scoreValue.textContent = String(this.score);
-    this.timeValue.textContent = String(Math.max(0, Math.ceil(this.timeRemainingMs / 1000)));
-    const grid = LEVEL_CONFIGS[this.level].grid;
-    this.levelValue.textContent = `${grid}x${grid}`;
+    this.timeValue.textContent = String(remainingSec);
+
+    const currentGrid = LEVEL_CONFIGS[this.level].grid;
+    if (this.promotionState === "pending" && this.promotionTargetLevel) {
+      this.levelValue.textContent = `${this.level}→${this.promotionTargetLevel}탄`;
+    } else {
+      this.levelValue.textContent = `${this.level}탄 ${currentGrid}x${currentGrid}`;
+    }
+
     this.comboValue.textContent = String(this.combo);
     this.bestValue.textContent = String(this.profile.bestScore);
     this.coinsValue.textContent = String(this.profile.coins);
 
+    const capMs = Math.max(START_TIME_MS, this.timeGaugeCapMs);
+    const fillRatio = clamp(this.timeRemainingMs / capMs, 0, 1);
+    this.timeGaugeFill.style.width = `${(fillRatio * 100).toFixed(2)}%`;
+    this.timeGaugeFill.classList.remove("warn", "critical");
+    if (fillRatio <= 0.35) {
+      this.timeGaugeFill.classList.add("critical");
+    } else if (fillRatio <= 0.6) {
+      this.timeGaugeFill.classList.add("warn");
+    }
+    this.timeGaugeText.textContent = `${remainingSec}s`;
+
     const slowTag = this.getSlowFactor() > 1 ? " · SLOW" : "";
-    this.statusLine.textContent = `${this.statusText}${slowTag} · 활성 ${this.activeMoles.length}`;
+    const promotionTag =
+      this.promotionState === "pending"
+        ? " · 전환준비"
+        : this.promotionState === "grace"
+          ? " · 적응중"
+          : "";
+    const entryEaseTag =
+      this.levelEaseFromLevel !== null ? ` · 확장적응 ${Math.round(this.getLevelEntryEaseRatio() * 100)}%` : "";
+    this.statusLine.textContent = `${this.statusText}${slowTag}${promotionTag}${entryEaseTag} · 활성 ${this.activeMoles.length}`;
   }
 
   private renderFrame(): void {
@@ -1180,31 +1926,45 @@ class WhackGame {
   }
 
   private drawImageCover(image: HTMLImageElement): void {
+    this.drawImageCoverToRect(this.ctx, image, 0, 0, this.canvasWidth, this.canvasHeight);
+  }
+
+  private drawImageCoverToRect(
+    context: CanvasRenderingContext2D,
+    image: HTMLImageElement,
+    targetX: number,
+    targetY: number,
+    targetWidth: number,
+    targetHeight: number
+  ): void {
     const imageAspect = image.width / image.height;
-    const canvasAspect = this.canvasWidth / this.canvasHeight;
+    const targetAspect = targetWidth / targetHeight;
 
-    let drawWidth = this.canvasWidth;
-    let drawHeight = this.canvasHeight;
-    let offsetX = 0;
-    let offsetY = 0;
+    let drawWidth = targetWidth;
+    let drawHeight = targetHeight;
+    let offsetX = targetX;
+    let offsetY = targetY;
 
-    if (imageAspect > canvasAspect) {
-      drawHeight = this.canvasHeight;
+    if (imageAspect > targetAspect) {
+      drawHeight = targetHeight;
       drawWidth = drawHeight * imageAspect;
-      offsetX = (this.canvasWidth - drawWidth) / 2;
+      offsetX = targetX + (targetWidth - drawWidth) / 2;
     } else {
-      drawWidth = this.canvasWidth;
+      drawWidth = targetWidth;
       drawHeight = drawWidth / imageAspect;
-      offsetY = (this.canvasHeight - drawHeight) / 2;
+      offsetY = targetY + (targetHeight - drawHeight) / 2;
     }
-    this.ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+    context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
   }
 
   private drawHoles(): void {
     if (!this.assets) {
       return;
     }
-    const sortedCells = [...this.cells].sort((a, b) => a.row - b.row);
+    const visibleCellSet = this.getVisibleCellSetForRender();
+    const sortedCells = [...this.cells]
+      .filter((cell) => !visibleCellSet || visibleCellSet.has(cell.index))
+      .sort((a, b) => a.row - b.row);
     for (const cell of sortedCells) {
       this.drawSprite(
         this.assets.hole,
@@ -1220,7 +1980,10 @@ class WhackGame {
     if (!this.assets) {
       return;
     }
-    const sortedCells = [...this.cells].sort((a, b) => a.row - b.row);
+    const visibleCellSet = this.getVisibleCellSetForRender();
+    const sortedCells = [...this.cells]
+      .filter((cell) => !visibleCellSet || visibleCellSet.has(cell.index))
+      .sort((a, b) => a.row - b.row);
     for (const cell of sortedCells) {
       const x = cell.cx - cell.holeWidth / 2;
       const y = cell.cy - cell.holeHeight / 2;
@@ -1231,6 +1994,10 @@ class WhackGame {
       this.drawSprite(this.assets.hole, x, y, cell.holeWidth, cell.holeHeight);
       this.ctx.restore();
     }
+  }
+
+  private getVisibleCellSetForRender(): Set<number> | null {
+    return this.getUnlockedSpawnCellSet();
   }
 
   private drawMoles(): void {
@@ -1264,18 +2031,42 @@ class WhackGame {
         x += shake;
       }
 
-      const clipLeft = cell.cx - cell.holeWidth * 0.68;
-      const clipTop = -this.canvasHeight;
-      const clipBottomY = metrics.clipBottomY;
-
       this.ctx.save();
-      this.ctx.beginPath();
-      this.ctx.rect(clipLeft, clipTop, cell.holeWidth * 1.36, clipBottomY - clipTop);
+      this.buildMoleClipPath(cell, metrics.clipBottomY);
       this.ctx.clip();
       this.drawMoleBody(sprite, mole.type, x, y, metrics.width, metrics.height);
       this.ctx.restore();
       this.drawMoleBadge(mole, cell, metrics.visibility);
     }
+  }
+
+  private buildMoleClipPath(cell: Cell, clipBottomY: number): void {
+    const clipLeft = cell.cx - cell.holeWidth * MOLE_CLIP_RECT_WIDTH_FACTOR;
+    const clipRight = cell.cx + cell.holeWidth * MOLE_CLIP_RECT_WIDTH_FACTOR;
+    const clipTop = -this.canvasHeight;
+
+    const curveHalfWidth = cell.holeWidth * MOLE_CLIP_CURVE_HALF_WIDTH_FACTOR;
+    const curveLeft = cell.cx - curveHalfWidth;
+    const curveRight = cell.cx + curveHalfWidth;
+    const edgeY = clipBottomY - cell.holeHeight * MOLE_CLIP_CURVE_EDGE_OFFSET_FACTOR;
+    const dipY = clipBottomY + cell.holeHeight * MOLE_CLIP_CURVE_DIP_OFFSET_FACTOR;
+    const controlOffsetX = curveHalfWidth * 0.58;
+
+    this.ctx.beginPath();
+    this.ctx.moveTo(clipLeft, clipTop);
+    this.ctx.lineTo(clipRight, clipTop);
+    this.ctx.lineTo(clipRight, edgeY);
+    this.ctx.lineTo(curveRight, edgeY);
+    this.ctx.bezierCurveTo(
+      cell.cx + controlOffsetX,
+      dipY,
+      cell.cx - controlOffsetX,
+      dipY,
+      curveLeft,
+      edgeY
+    );
+    this.ctx.lineTo(clipLeft, edgeY);
+    this.ctx.closePath();
   }
 
   private getMoleDrawMetrics(mole: ActiveMole, cell: Cell): MoleDrawMetrics {
@@ -1404,8 +2195,140 @@ class WhackGame {
     return this.assets.retreat;
   }
 
+  private async buildBragImageBlob(): Promise<Blob> {
+    if (!this.canvasWidth || !this.canvasHeight) {
+      throw new Error("캡처할 게임 화면이 없습니다.");
+    }
+
+    const targetWidth = 1280;
+    const bragBackground = await this.getBragBackgroundImage();
+    const targetHeight = bragBackground ? Math.round((targetWidth * bragBackground.height) / bragBackground.width) : 960;
+    const output = document.createElement("canvas");
+    output.width = targetWidth;
+    output.height = targetHeight;
+
+    const ctx = output.getContext("2d");
+    if (!ctx) {
+      throw new Error("캡처 컨텍스트를 만들 수 없습니다.");
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    const totalCoins = this.matchSummary.baseCoins + this.matchSummary.rewardCoins;
+    if (bragBackground) {
+      this.drawImageCoverToRect(ctx, bragBackground, 0, 0, output.width, output.height);
+      ctx.fillStyle = "rgba(16, 26, 12, 0.22)";
+      ctx.fillRect(0, 0, output.width, output.height);
+    } else {
+      const gradient = ctx.createLinearGradient(0, 0, 0, output.height);
+      gradient.addColorStop(0, "#a9e36f");
+      gradient.addColorStop(0.55, "#76be55");
+      gradient.addColorStop(1, "#4f9442");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, output.width, output.height);
+    }
+
+    const vignette = ctx.createRadialGradient(
+      output.width * 0.5,
+      output.height * 0.42,
+      output.width * 0.25,
+      output.width * 0.5,
+      output.height * 0.48,
+      output.width * 0.82
+    );
+    vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+    vignette.addColorStop(1, "rgba(0, 0, 0, 0.28)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, output.width, output.height);
+
+    const headerBandHeight = Math.round(output.height * 0.17);
+    const summaryBandY = Math.round(output.height * 0.205);
+    const summaryBandHeight = Math.round(output.height * 0.08);
+    const footerPanelHeight = Math.round(output.height * 0.19);
+    const footerPanelY = output.height - footerPanelHeight - 24;
+
+    ctx.fillStyle = "rgba(18, 29, 16, 0.42)";
+    ctx.fillRect(0, 0, output.width, headerBandHeight);
+
+    ctx.fillStyle = "#fff6db";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "700 62px Trebuchet MS";
+    ctx.fillText("DOTHEGI", output.width / 2, Math.round(headerBandHeight * 0.38));
+    ctx.font = "700 52px Trebuchet MS";
+    ctx.fillText(`${this.matchSummary.score}`, output.width / 2, Math.round(headerBandHeight * 0.77));
+    ctx.font = "700 34px Trebuchet MS";
+    ctx.fillText("친구에게 점수 자랑!", output.width / 2, Math.round(headerBandHeight * 1.12));
+
+    ctx.fillStyle = "rgba(15, 21, 14, 0.68)";
+    ctx.fillRect(40, summaryBandY, output.width - 80, summaryBandHeight);
+    ctx.fillStyle = "#fffce9";
+    ctx.font = "700 56px Trebuchet MS";
+    ctx.fillText(
+      `점수 ${this.matchSummary.score} · 최고콤보 ${this.matchSummary.bestCombo} · 생존 ${this.matchSummary.survivalSec}s`,
+      output.width / 2,
+      summaryBandY + summaryBandHeight / 2
+    );
+
+    ctx.fillStyle = "rgba(17, 26, 16, 0.74)";
+    ctx.fillRect(52, footerPanelY, output.width - 104, footerPanelHeight);
+    ctx.fillStyle = "#fffce9";
+    ctx.font = "700 50px Trebuchet MS";
+    ctx.fillText(`획득 코인 +${totalCoins}`, output.width / 2, footerPanelY + Math.round(footerPanelHeight * 0.39));
+    ctx.font = "700 36px Trebuchet MS";
+    ctx.fillText(
+      `최고점수 ${this.profile.bestScore} · 현재 코인 ${this.profile.coins}`,
+      output.width / 2,
+      footerPanelY + Math.round(footerPanelHeight * 0.70)
+    );
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      output.toBlob((result) => resolve(result), "image/png");
+    });
+    if (!blob) {
+      throw new Error("이미지 생성 실패");
+    }
+    return blob;
+  }
+
+  private async getBragBackgroundImage(): Promise<HTMLImageElement | null> {
+    if (this.bragBackgroundImage) {
+      return this.bragBackgroundImage;
+    }
+    try {
+      const image = await loadImage(assetPath("image.png"));
+      this.bragBackgroundImage = image;
+      return image;
+    } catch {
+      return null;
+    }
+  }
+
+  private createBragFilename(): string {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const hh = String(now.getHours()).padStart(2, "0");
+    const min = String(now.getMinutes()).padStart(2, "0");
+    return `dothegi-score-${yyyy}${mm}${dd}-${hh}${min}.png`;
+  }
+
+  private downloadBlob(blob: Blob, filename: string): void {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
   private showResultModal(): void {
     this.resultModal.classList.remove("hidden");
+    this.bragButton.disabled = false;
+    this.bragButton.textContent = "친구에게 자랑하기 (이미지 저장)";
     this.rewardButton.disabled = false;
     this.rewardButton.textContent = `보상 받기 (+${REWARD_BONUS_COINS} 코인)`;
   }
@@ -1472,7 +2395,8 @@ class WhackGame {
         totalPlays: Number.isFinite(parsed.totalPlays) ? Number(parsed.totalPlays) : 0,
         totalHits: Number.isFinite(parsed.totalHits) ? Number(parsed.totalHits) : 0,
         totalMisses: Number.isFinite(parsed.totalMisses) ? Number(parsed.totalMisses) : 0,
-        coins: Number.isFinite(parsed.coins) ? Number(parsed.coins) : 0
+        coins: Number.isFinite(parsed.coins) ? Number(parsed.coins) : 0,
+        soundEnabled: typeof parsed.soundEnabled === "boolean" ? parsed.soundEnabled : true
       };
     } catch {
       return { ...defaultProfile };
