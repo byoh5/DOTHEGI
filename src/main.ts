@@ -323,8 +323,12 @@ class WhackGame {
     this.profile = this.loadProfile();
     this.renderCharacterPreviews();
     this.syncHud();
+    this.syncViewportHeight();
 
     window.addEventListener("resize", this.handleResize);
+    window.addEventListener("orientationchange", this.handleResize);
+    window.visualViewport?.addEventListener("resize", this.handleResize);
+    window.visualViewport?.addEventListener("scroll", this.handleResize);
     this.canvas.addEventListener("pointerdown", this.handlePointerDown);
     this.startButton.addEventListener("click", this.handleStartClick);
     this.pauseButton.addEventListener("click", this.handlePauseClick);
@@ -382,8 +386,17 @@ class WhackGame {
   }
 
   private readonly handleResize = (): void => {
+    this.syncViewportHeight();
     this.resizeCanvas();
   };
+
+  private syncViewportHeight(): void {
+    const viewportHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
+    if (viewportHeight <= 0) {
+      return;
+    }
+    document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
+  }
 
   private readonly handleStartClick = (): void => {
     if (!this.assets) {
