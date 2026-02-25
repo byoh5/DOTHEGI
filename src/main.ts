@@ -1013,11 +1013,25 @@ class WhackGame {
 
     const config = LEVEL_CONFIGS[this.level];
     const grid = config.grid;
+    const isPortrait = this.canvasHeight > this.canvasWidth;
+    const safeTopRatio = isPortrait ? 0.2 : 0.22;
+    const safeBottomRatio = isPortrait ? 0.15 : 0.13;
+    const boardHeightToWidthRatio = 0.82;
+    const maxBoardWidth = this.canvasWidth * 0.78;
+    const maxBoardHeight = this.canvasHeight * (isPortrait ? 0.52 : 0.62);
+    const preferredBoardHeight = maxBoardWidth * boardHeightToWidthRatio;
+    const boardHeight = Math.min(maxBoardHeight, preferredBoardHeight);
+    const boardWidth = Math.min(maxBoardWidth, boardHeight / boardHeightToWidthRatio);
+
+    const safeTop = this.canvasHeight * safeTopRatio;
+    const safeBottomLimit = this.canvasHeight * (1 - safeBottomRatio);
+    const boardY = clamp((safeTop + safeBottomLimit - boardHeight) / 2, safeTop, safeBottomLimit - boardHeight);
+
     const boardRect: BoardRect = {
-      x: this.canvasWidth * 0.12,
-      y: this.canvasHeight * 0.24,
-      width: this.canvasWidth * 0.76,
-      height: this.canvasHeight * 0.62
+      x: (this.canvasWidth - boardWidth) / 2,
+      y: boardY,
+      width: boardWidth,
+      height: boardHeight
     };
     this.boardRect = boardRect;
 
