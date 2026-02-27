@@ -282,6 +282,20 @@ interface ToneSpec {
   endFreq?: number;
 }
 
+const SFX_MASTER_GAIN = 0.62;
+const BGM_LOOP_INTERVAL_MS = 2600;
+const BGM_LOOP_SEQUENCE: ToneSpec[] = [
+  { freq: 392, durationMs: 220, offsetMs: 0, gain: 0.03, type: "triangle" },
+  { freq: 494, durationMs: 220, offsetMs: 260, gain: 0.032, type: "triangle" },
+  { freq: 523, durationMs: 220, offsetMs: 520, gain: 0.03, type: "triangle" },
+  { freq: 587, durationMs: 220, offsetMs: 780, gain: 0.032, type: "triangle" },
+  { freq: 523, durationMs: 220, offsetMs: 1040, gain: 0.03, type: "triangle" },
+  { freq: 494, durationMs: 220, offsetMs: 1300, gain: 0.03, type: "triangle" },
+  { freq: 440, durationMs: 220, offsetMs: 1560, gain: 0.028, type: "triangle" },
+  { freq: 392, durationMs: 240, offsetMs: 1820, gain: 0.03, type: "triangle" },
+  { freq: 330, durationMs: 240, offsetMs: 2080, gain: 0.026, type: "triangle" }
+];
+
 type AudioContextCtor = new () => AudioContext;
 
 function getAudioContextCtor(): AudioContextCtor | null {
@@ -293,6 +307,7 @@ class SfxEngine {
   private audioContext: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private enabled: boolean;
+  private bgmTimerId: number | null = null;
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -300,6 +315,9 @@ class SfxEngine {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    if (!enabled) {
+      this.stopBgm();
+    }
   }
 
   async unlock(): Promise<void> {
@@ -317,6 +335,7 @@ class SfxEngine {
   }
 
   dispose(): void {
+    this.stopBgm();
     const ctx = this.audioContext;
     this.audioContext = null;
     this.masterGain = null;
@@ -408,6 +427,48 @@ class SfxEngine {
     ]);
   }
 
+  startBgm(): void {
+    if (!this.enabled || this.bgmTimerId !== null) {
+      return;
+    }
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain) {
+      return;
+    }
+    if (ctx.state !== "running") {
+      if (ctx.state === "suspended") {
+        void ctx.resume().then(() => this.startBgm()).catch(() => {
+          // 자동 재생 정책으로 재개 실패 가능
+        });
+      }
+      return;
+    }
+
+    this.play(BGM_LOOP_SEQUENCE);
+    this.bgmTimerId = window.setInterval(() => {
+      if (!this.enabled) {
+        this.stopBgm();
+        return;
+      }
+      this.play(BGM_LOOP_SEQUENCE);
+    }, BGM_LOOP_INTERVAL_MS);
+  }
+
+  pauseBgm(): void {
+    this.stopBgm();
+  }
+
+  resumeBgm(): void {
+    this.startBgm();
+  }
+
+  stopBgm(): void {
+    if (this.bgmTimerId !== null) {
+      window.clearInterval(this.bgmTimerId);
+      this.bgmTimerId = null;
+    }
+  }
+
   private ensureContext(): AudioContext | null {
     if (this.audioContext) {
       return this.audioContext;
@@ -418,7 +479,7 @@ class SfxEngine {
     }
     const ctx = new AudioCtor();
     const master = ctx.createGain();
-    master.gain.value = 0.35;
+    master.gain.value = SFX_MASTER_GAIN;
     master.connect(ctx.destination);
     this.audioContext = ctx;
     this.masterGain = master;
@@ -711,6 +772,11 @@ class WhackGame {
     this.saveProfile();
     if (nextEnabled) {
       void this.sfx.unlock();
+      if (this.isRunning && !this.isPaused && !this.isGameOver) {
+        this.sfx.startBgm();
+      }
+    } else {
+      this.sfx.stopBgm();
     }
     this.sfx.playToggle(nextEnabled);
     this.statusText = nextEnabled ? "사운드 ON" : "사운드 OFF";
@@ -850,12 +916,14 @@ class WhackGame {
       this.pauseButton.textContent = "계속";
       this.statusText = "일시정지";
       this.showMessage("일시정지");
+      this.sfx.pauseBgm();
       this.sfx.playPause();
     } else {
       this.pauseButton.textContent = "일시정지";
       this.statusText = "플레이 중";
       this.hideMessage();
       this.lastFrameMs = performance.now();
+      this.sfx.resumeBgm();
       this.sfx.playResume();
     }
     this.syncHud();
@@ -987,6 +1055,7 @@ class WhackGame {
     this.hideMessage();
     this.hideResultModal();
     this.sfx.playStart();
+    this.sfx.startBgm();
 
     this.refreshCells();
     this.lastFrameMs = 0;
@@ -1869,6 +1938,7 @@ class WhackGame {
     this.profile.bestCombo = Math.max(this.profile.bestCombo, this.bestCombo);
     this.profile.coins += baseCoins;
     this.saveProfile();
+    this.sfx.stopBgm();
     this.sfx.playGameOver();
 
     this.statusText = `종료 · 점수 ${this.score}`;
