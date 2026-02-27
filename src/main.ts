@@ -282,7 +282,7 @@ interface ToneSpec {
   endFreq?: number;
 }
 
-const SFX_MASTER_GAIN = 0.62;
+const SFX_MASTER_GAIN = 0.82;
 const BGM_LOOP_INTERVAL_MS = 2600;
 const BGM_MIN_TEMPO = 1;
 const BGM_MAX_TEMPO = 1.48;
