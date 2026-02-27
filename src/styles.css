@@ -174,10 +174,98 @@ body {
   font-weight: 700;
   pointer-events: none;
   white-space: pre-line;
+  opacity: 1;
+  transition: opacity 140ms ease;
 }
 
 .center-message.hidden {
   opacity: 0;
+}
+
+@keyframes stage-toast-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -47%) scale(0.9);
+    filter: blur(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes stage-toast-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 10px 30px rgba(10, 24, 16, 0.44),
+      0 0 0 1px rgba(255, 238, 176, 0.16) inset;
+  }
+  50% {
+    box-shadow:
+      0 12px 34px rgba(10, 24, 16, 0.52),
+      0 0 0 1px rgba(255, 244, 198, 0.22) inset;
+  }
+}
+
+.center-message.stage-transition {
+  min-width: min(430px, 84vw);
+  padding: 18px 20px 16px;
+  border-radius: 16px;
+  border: 2px solid rgba(255, 241, 187, 0.64);
+  background:
+    radial-gradient(120% 100% at 50% 0%, rgba(255, 225, 119, 0.2) 0%, rgba(255, 225, 119, 0) 58%),
+    linear-gradient(180deg, rgba(20, 37, 24, 0.95) 0%, rgba(12, 27, 18, 0.92) 100%);
+  color: #fff7d7;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  white-space: normal;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 10px 30px rgba(10, 24, 16, 0.44),
+    0 0 0 1px rgba(255, 238, 176, 0.16) inset;
+  animation:
+    stage-toast-pop 280ms cubic-bezier(0.2, 0.9, 0.22, 1),
+    stage-toast-glow 1500ms ease-in-out infinite;
+}
+
+.center-message.stage-transition::after {
+  content: "";
+  width: 58%;
+  height: 2px;
+  margin-top: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255, 220, 118, 0) 0%, rgba(255, 220, 118, 0.9) 48%, rgba(255, 220, 118, 0) 100%);
+}
+
+.stage-toast-kicker {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1.7px;
+  color: #ffd978;
+}
+
+.stage-toast-title {
+  font-size: clamp(28px, 4.3vw, 34px);
+  line-height: 1.02;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  color: #fff6d8;
+}
+
+.stage-toast-meta {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffebb5;
+}
+
+.stage-toast-next {
+  font-size: 18px;
+  font-weight: 900;
+  color: #9dff8f;
 }
 
 .control-row {
@@ -496,5 +584,29 @@ body {
   .center-message {
     font-size: 14px;
     padding: 9px 12px;
+  }
+
+  .center-message.stage-transition {
+    min-width: min(92vw, 360px);
+    padding: 12px 14px 11px;
+    border-radius: 13px;
+    gap: 3px;
+  }
+
+  .stage-toast-kicker {
+    font-size: 10px;
+    letter-spacing: 1.2px;
+  }
+
+  .stage-toast-title {
+    font-size: clamp(22px, 6.4vw, 30px);
+  }
+
+  .stage-toast-meta {
+    font-size: 12px;
+  }
+
+  .stage-toast-next {
+    font-size: 15px;
   }
 }

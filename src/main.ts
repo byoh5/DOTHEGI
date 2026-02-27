@@ -112,9 +112,18 @@ const START_TIME_MS = 45_000;
 const MAX_TIME_MS = 120_000;
 const CHECKPOINT_MS = 5_000;
 const CELL_COOLDOWN_MS = 900;
-const PROMOTION_PENDING_MS = 6_000;
-const STAGE1_PROMOTION_PENDING_MS = 4_000;
+const PROMOTION_PENDING_MS = 1_500;
+const STAGE1_PROMOTION_PENDING_MS = 1_200;
 const PROMOTION_GRACE_BASE_MS = 3_000;
+const STAGE_TRANSITION_NOTICE_MS = 1_800;
+const STAGE_START_TIME_MS: Partial<Record<number, number>> = {
+  2: 45_000,
+  3: 43_000,
+  4: 41_000,
+  5: 39_000,
+  6: 37_000,
+  7: 35_000
+};
 const LEVEL_ENTRY_EASE_MS: Partial<Record<number, number>> = {
   2: 14_000,
   3: 10_000,
@@ -126,22 +135,6 @@ const LEVEL_ENTRY_EASE_MS: Partial<Record<number, number>> = {
 const PROMOTION_GRACE_MS_BY_LEVEL: Partial<Record<number, number>> = {
   2: 8_000,
   3: 5_000
-};
-const STAGE_CLEAR_BONUS_MS: Partial<Record<number, number>> = {
-  2: 18_000,
-  3: 12_000,
-  4: 10_000,
-  5: 9_000,
-  6: 8_000,
-  7: 7_000
-};
-const STAGE_ENTRY_MIN_TIME_MS: Partial<Record<number, number>> = {
-  2: 30_000,
-  3: 24_000,
-  4: 22_000,
-  5: 20_000,
-  6: 18_000,
-  7: 16_000
 };
 const STORAGE_KEY = "dothegi.profile.v2";
 const REWARD_BONUS_COINS = 20;
@@ -547,6 +540,8 @@ class WhackGame {
   private levelEaseFromLevel: number | null = null;
   private levelEaseElapsedMs = 0;
   private levelEaseDurationMs = 0;
+  private stageTransitionLockMs = 0;
+  private stageTransitionResumeText = "플레이 중";
   private stageFloorLevel = 1;
   private lowPiStreak = 0;
 
@@ -846,6 +841,9 @@ class WhackGame {
     if (!this.isRunning) {
       return;
     }
+    if (this.stageTransitionLockMs > 0) {
+      return;
+    }
     void this.sfx.unlock();
     this.isPaused = !this.isPaused;
     if (this.isPaused) {
@@ -866,7 +864,7 @@ class WhackGame {
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
     void this.sfx.unlock();
-    if (!this.isRunning || this.isPaused) {
+    if (!this.isRunning || this.isPaused || this.stageTransitionLockMs > 0) {
       return;
     }
 
@@ -960,6 +958,8 @@ class WhackGame {
     this.levelEaseFromLevel = null;
     this.levelEaseElapsedMs = 0;
     this.levelEaseDurationMs = 0;
+    this.stageTransitionLockMs = 0;
+    this.stageTransitionResumeText = "플레이 중";
     this.stageFloorLevel = 1;
     this.lowPiStreak = 0;
     this.elapsedMs = 0;
@@ -999,8 +999,18 @@ class WhackGame {
 
   private update(deltaMs: number): void {
     this.elapsedMs += deltaMs;
-    this.timeRemainingMs = Math.max(0, this.timeRemainingMs - deltaMs);
+    if (this.stageTransitionLockMs > 0) {
+      this.updateStageTransitionLock(deltaMs);
+      return;
+    }
+
+    if (this.promotionState !== "pending") {
+      this.timeRemainingMs = Math.max(0, this.timeRemainingMs - deltaMs);
+    }
     this.updatePromotionState(deltaMs);
+    if (this.stageTransitionLockMs > 0) {
+      return;
+    }
     this.updateLevelEntryEase(deltaMs);
 
     this.updateMoles(deltaMs);
@@ -1341,14 +1351,12 @@ class WhackGame {
 
     if (this.promotionState === "pending" && this.promotionElapsedMs >= this.getPendingDurationMs()) {
       const targetLevel = this.promotionTargetLevel ?? this.level + 1;
-      this.setLevel(targetLevel);
-      const grantedMs = this.applyStageClearTimeBonus(targetLevel);
       const clearedStage = Math.max(1, targetLevel - 1);
+      this.setLevel(targetLevel);
+      const resetMs = this.resetTimeForStageStart(targetLevel);
       this.promotionState = "grace";
       this.promotionElapsedMs = 0;
-      this.statusText = `${clearedStage}탄 클리어! +${Math.round(grantedMs / 1000)}s · ${
-        LEVEL_CONFIGS[this.level].grid
-      }x${LEVEL_CONFIGS[this.level].grid} 적응`;
+      this.beginStageTransitionNotice(clearedStage, targetLevel, resetMs);
       return;
     }
 
@@ -1356,7 +1364,21 @@ class WhackGame {
       this.promotionState = "none";
       this.promotionTargetLevel = null;
       this.promotionElapsedMs = 0;
-      this.statusText = "플레이 중";
+      this.statusText = `${this.level}탄 진행`;
+    }
+  }
+
+  private updateStageTransitionLock(deltaMs: number): void {
+    if (this.stageTransitionLockMs <= 0) {
+      return;
+    }
+    this.stageTransitionLockMs = Math.max(0, this.stageTransitionLockMs - deltaMs);
+    if (this.stageTransitionLockMs === 0) {
+      this.hideMessage();
+      if (this.isRunning && !this.isGameOver) {
+        this.statusText = this.stageTransitionResumeText;
+        this.pauseButton.disabled = false;
+      }
     }
   }
 
@@ -1401,14 +1423,22 @@ class WhackGame {
     return PROMOTION_GRACE_MS_BY_LEVEL[this.level] ?? PROMOTION_GRACE_BASE_MS;
   }
 
-  private applyStageClearTimeBonus(targetLevel: number): number {
-    const bonusMs = STAGE_CLEAR_BONUS_MS[targetLevel] ?? 8_000;
-    const minEntryMs = STAGE_ENTRY_MIN_TIME_MS[targetLevel] ?? 14_000;
-    const before = this.timeRemainingMs;
-    const withBonus = Math.min(MAX_TIME_MS, before + bonusMs);
-    this.timeRemainingMs = clamp(Math.max(withBonus, minEntryMs), 0, MAX_TIME_MS);
-    this.timeGaugeCapMs = Math.max(this.timeGaugeCapMs, this.timeRemainingMs);
-    return Math.max(0, this.timeRemainingMs - before);
+  private resetTimeForStageStart(targetLevel: number): number {
+    const stageStartMs = clamp(STAGE_START_TIME_MS[targetLevel] ?? START_TIME_MS, 1_000, MAX_TIME_MS);
+    this.timeRemainingMs = stageStartMs;
+    this.timeGaugeCapMs = stageStartMs;
+    return stageStartMs;
+  }
+
+  private beginStageTransitionNotice(clearedStage: number, targetLevel: number, stageTimeMs: number): void {
+    this.activeMoles = [];
+    this.recentCellIndices = [];
+    this.nextSpawnAtMs = this.elapsedMs + STAGE_TRANSITION_NOTICE_MS + 180;
+    this.stageTransitionLockMs = STAGE_TRANSITION_NOTICE_MS;
+    this.stageTransitionResumeText = `${targetLevel}탄 진행`;
+    this.pauseButton.disabled = true;
+    this.statusText = `${clearedStage}탄 클리어`;
+    this.showStageTransitionMessage(clearedStage, targetLevel, Math.round(stageTimeMs / 1000));
   }
 
   private cancelPromotion(reason: string): void {
@@ -1896,9 +1926,10 @@ class WhackGame {
         : this.promotionState === "grace"
           ? " · 적응중"
           : "";
+    const transitionTag = this.stageTransitionLockMs > 0 ? " · 스테이지전환" : "";
     const entryEaseTag =
       this.levelEaseFromLevel !== null ? ` · 확장적응 ${Math.round(this.getLevelEntryEaseRatio() * 100)}%` : "";
-    this.statusLine.textContent = `${this.statusText}${slowTag}${promotionTag}${entryEaseTag} · 활성 ${this.activeMoles.length}`;
+    this.statusLine.textContent = `${this.statusText}${slowTag}${promotionTag}${transitionTag}${entryEaseTag} · 활성 ${this.activeMoles.length}`;
   }
 
   private renderFrame(): void {
@@ -2344,11 +2375,28 @@ class WhackGame {
   }
 
   private showMessage(message: string): void {
+    this.centerMessage.classList.remove("stage-transition");
     this.centerMessage.textContent = message;
     this.centerMessage.classList.remove("hidden");
   }
 
+  private showStageTransitionMessage(clearedStage: number, targetLevel: number, stageSeconds: number): void {
+    const stageGrid = LEVEL_CONFIGS[targetLevel].grid;
+    this.centerMessage.classList.remove("stage-transition");
+    void this.centerMessage.offsetWidth;
+    this.centerMessage.classList.add("stage-transition");
+    this.centerMessage.innerHTML = [
+      `<span class="stage-toast-kicker">STAGE CLEAR</span>`,
+      `<strong class="stage-toast-title">${clearedStage}탄 클리어!</strong>`,
+      `<span class="stage-toast-meta">시간 ${stageSeconds}s 리셋</span>`,
+      `<span class="stage-toast-next">${targetLevel}탄 ${stageGrid}x${stageGrid} 시작</span>`
+    ].join("");
+    this.centerMessage.classList.remove("hidden");
+  }
+
   private hideMessage(): void {
+    this.centerMessage.classList.remove("stage-transition");
+    this.centerMessage.textContent = "";
     this.centerMessage.classList.add("hidden");
   }
 
