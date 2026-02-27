@@ -284,16 +284,42 @@ interface ToneSpec {
 
 const SFX_MASTER_GAIN = 0.62;
 const BGM_LOOP_INTERVAL_MS = 2600;
-const BGM_LOOP_SEQUENCE: ToneSpec[] = [
-  { freq: 392, durationMs: 220, offsetMs: 0, gain: 0.03, type: "triangle" },
-  { freq: 494, durationMs: 220, offsetMs: 260, gain: 0.032, type: "triangle" },
-  { freq: 523, durationMs: 220, offsetMs: 520, gain: 0.03, type: "triangle" },
-  { freq: 587, durationMs: 220, offsetMs: 780, gain: 0.032, type: "triangle" },
-  { freq: 523, durationMs: 220, offsetMs: 1040, gain: 0.03, type: "triangle" },
-  { freq: 494, durationMs: 220, offsetMs: 1300, gain: 0.03, type: "triangle" },
-  { freq: 440, durationMs: 220, offsetMs: 1560, gain: 0.028, type: "triangle" },
-  { freq: 392, durationMs: 240, offsetMs: 1820, gain: 0.03, type: "triangle" },
-  { freq: 330, durationMs: 240, offsetMs: 2080, gain: 0.026, type: "triangle" }
+const BGM_MIN_TEMPO = 1;
+const BGM_MAX_TEMPO = 1.48;
+const BGM_LOOP_PATTERNS: ToneSpec[][] = [
+  [
+    { freq: 392, durationMs: 220, offsetMs: 0, gain: 0.03, type: "triangle" },
+    { freq: 494, durationMs: 220, offsetMs: 260, gain: 0.032, type: "triangle" },
+    { freq: 523, durationMs: 220, offsetMs: 520, gain: 0.03, type: "triangle" },
+    { freq: 587, durationMs: 220, offsetMs: 780, gain: 0.032, type: "triangle" },
+    { freq: 523, durationMs: 220, offsetMs: 1040, gain: 0.03, type: "triangle" },
+    { freq: 494, durationMs: 220, offsetMs: 1300, gain: 0.03, type: "triangle" },
+    { freq: 440, durationMs: 220, offsetMs: 1560, gain: 0.028, type: "triangle" },
+    { freq: 392, durationMs: 240, offsetMs: 1820, gain: 0.03, type: "triangle" },
+    { freq: 330, durationMs: 240, offsetMs: 2080, gain: 0.026, type: "triangle" }
+  ],
+  [
+    { freq: 392, durationMs: 210, offsetMs: 0, gain: 0.029, type: "triangle" },
+    { freq: 440, durationMs: 210, offsetMs: 240, gain: 0.03, type: "triangle" },
+    { freq: 494, durationMs: 210, offsetMs: 480, gain: 0.031, type: "triangle" },
+    { freq: 523, durationMs: 210, offsetMs: 720, gain: 0.031, type: "triangle" },
+    { freq: 587, durationMs: 210, offsetMs: 960, gain: 0.032, type: "triangle" },
+    { freq: 659, durationMs: 200, offsetMs: 1200, gain: 0.031, type: "triangle" },
+    { freq: 587, durationMs: 210, offsetMs: 1440, gain: 0.03, type: "triangle" },
+    { freq: 523, durationMs: 210, offsetMs: 1680, gain: 0.029, type: "triangle" },
+    { freq: 440, durationMs: 240, offsetMs: 1940, gain: 0.027, type: "triangle" }
+  ],
+  [
+    { freq: 392, durationMs: 210, offsetMs: 0, gain: 0.029, type: "triangle" },
+    { freq: 523, durationMs: 180, offsetMs: 200, gain: 0.028, type: "triangle" },
+    { freq: 494, durationMs: 210, offsetMs: 470, gain: 0.031, type: "triangle" },
+    { freq: 587, durationMs: 190, offsetMs: 700, gain: 0.03, type: "triangle" },
+    { freq: 523, durationMs: 210, offsetMs: 930, gain: 0.03, type: "triangle" },
+    { freq: 659, durationMs: 190, offsetMs: 1170, gain: 0.031, type: "triangle" },
+    { freq: 587, durationMs: 210, offsetMs: 1420, gain: 0.03, type: "triangle" },
+    { freq: 494, durationMs: 210, offsetMs: 1680, gain: 0.029, type: "triangle" },
+    { freq: 392, durationMs: 250, offsetMs: 1960, gain: 0.027, type: "triangle" }
+  ]
 ];
 
 type AudioContextCtor = new () => AudioContext;
@@ -308,6 +334,8 @@ class SfxEngine {
   private masterGain: GainNode | null = null;
   private enabled: boolean;
   private bgmTimerId: number | null = null;
+  private bgmTempo = BGM_MIN_TEMPO;
+  private bgmPatternIndex = 0;
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -318,6 +346,10 @@ class SfxEngine {
     if (!enabled) {
       this.stopBgm();
     }
+  }
+
+  setBgmTempo(tempo: number): void {
+    this.bgmTempo = clamp(tempo, BGM_MIN_TEMPO, BGM_MAX_TEMPO);
   }
 
   async unlock(): Promise<void> {
@@ -444,14 +476,8 @@ class SfxEngine {
       return;
     }
 
-    this.play(BGM_LOOP_SEQUENCE);
-    this.bgmTimerId = window.setInterval(() => {
-      if (!this.enabled) {
-        this.stopBgm();
-        return;
-      }
-      this.play(BGM_LOOP_SEQUENCE);
-    }, BGM_LOOP_INTERVAL_MS);
+    this.bgmPatternIndex = 0;
+    this.scheduleBgmLoop();
   }
 
   pauseBgm(): void {
@@ -464,9 +490,43 @@ class SfxEngine {
 
   stopBgm(): void {
     if (this.bgmTimerId !== null) {
-      window.clearInterval(this.bgmTimerId);
+      window.clearTimeout(this.bgmTimerId);
       this.bgmTimerId = null;
     }
+  }
+
+  private scheduleBgmLoop(): void {
+    if (!this.enabled) {
+      this.stopBgm();
+      return;
+    }
+    const tempo = clamp(this.bgmTempo, BGM_MIN_TEMPO, BGM_MAX_TEMPO);
+    const pattern = BGM_LOOP_PATTERNS[this.bgmPatternIndex % BGM_LOOP_PATTERNS.length];
+    const sequence = this.buildBgmSequence(pattern, tempo, this.bgmPatternIndex);
+    this.play(sequence);
+    this.bgmPatternIndex += 1;
+
+    const swing = this.bgmPatternIndex % 2 === 0 ? 1 : 0.97;
+    const nextDelay = Math.max(900, Math.round((BGM_LOOP_INTERVAL_MS / tempo) * swing));
+    this.bgmTimerId = window.setTimeout(() => {
+      this.bgmTimerId = null;
+      this.scheduleBgmLoop();
+    }, nextDelay);
+  }
+
+  private buildBgmSequence(pattern: ToneSpec[], tempo: number, loopIndex: number): ToneSpec[] {
+    const safeTempo = clamp(tempo, BGM_MIN_TEMPO, BGM_MAX_TEMPO);
+    const pitchRatio = loopIndex % 8 >= 6 ? 1.0293 : 1;
+    const gainRatio = 0.96 + (loopIndex % 3) * 0.02;
+
+    return pattern.map((tone) => ({
+      ...tone,
+      freq: tone.freq * pitchRatio,
+      endFreq: tone.endFreq ? tone.endFreq * pitchRatio : undefined,
+      durationMs: Math.max(70, tone.durationMs / safeTempo),
+      offsetMs: (tone.offsetMs ?? 0) / safeTempo,
+      gain: (tone.gain ?? 0.03) * gainRatio
+    }));
   }
 
   private ensureContext(): AudioContext | null {
@@ -1054,6 +1114,7 @@ class WhackGame {
     this.startButton.textContent = "재시작";
     this.hideMessage();
     this.hideResultModal();
+    this.sfx.setBgmTempo(BGM_MIN_TEMPO);
     this.sfx.playStart();
     this.sfx.startBgm();
 
@@ -1068,6 +1129,7 @@ class WhackGame {
 
   private update(deltaMs: number): void {
     this.elapsedMs += deltaMs;
+    this.updateBgmTempo();
     if (this.stageTransitionLockMs > 0) {
       this.updateStageTransitionLock(deltaMs);
       return;
@@ -1089,6 +1151,22 @@ class WhackGame {
     if (this.timeRemainingMs <= 0) {
       this.endGame();
     }
+  }
+
+  private updateBgmTempo(): void {
+    const timeRatio = clamp(this.elapsedMs / 110_000, 0, 1);
+    const timeTempo = lerp(BGM_MIN_TEMPO, 1.34, timeRatio);
+    const levelTempo = 1 + Math.max(0, this.level - 1) * 0.035;
+    let targetTempo = Math.max(timeTempo, levelTempo);
+
+    if (this.promotionState === "grace") {
+      targetTempo *= 0.97;
+    }
+    if (this.stageTransitionLockMs > 0 || this.getSlowFactor() > 1) {
+      targetTempo *= 0.96;
+    }
+
+    this.sfx.setBgmTempo(clamp(targetTempo, BGM_MIN_TEMPO, BGM_MAX_TEMPO));
   }
 
   private updateMoles(deltaMs: number): void {
